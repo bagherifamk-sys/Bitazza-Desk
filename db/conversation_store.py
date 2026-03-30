@@ -227,7 +227,11 @@ def get_history(conversation_id: str, limit: int = 10) -> list[dict]:
         rows = cur.fetchall()
     result = []
     for r in reversed(rows):
-        meta = r["metadata"] or {}
+        raw_meta = r["metadata"]
+        meta = json.loads(raw_meta) if isinstance(raw_meta, str) and raw_meta else (raw_meta or {})
+        # Never expose internal notes to the customer-facing widget
+        if meta.get("is_internal_note"):
+            continue
         entry: dict = {
             "role": _sender_type_to_role(r["sender_type"]),
             "content": r["content"],

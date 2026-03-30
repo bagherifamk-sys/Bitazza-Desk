@@ -221,6 +221,7 @@ def get_history(conversation_id: str, limit: int = 10) -> list[dict]:
             SELECT sender_type, content, created_at, metadata
             FROM messages
             WHERE ticket_id = %s
+              AND sender_type != 'internal_note'
             ORDER BY created_at DESC
             LIMIT %s
         """, (conversation_id, limit))
@@ -229,7 +230,7 @@ def get_history(conversation_id: str, limit: int = 10) -> list[dict]:
     for r in reversed(rows):
         raw_meta = r["metadata"]
         meta = json.loads(raw_meta) if isinstance(raw_meta, str) and raw_meta else (raw_meta or {})
-        # Never expose internal notes to the customer-facing widget
+        # Belt-and-suspenders: also skip anything flagged internal in metadata
         if meta.get("is_internal_note"):
             continue
         entry: dict = {

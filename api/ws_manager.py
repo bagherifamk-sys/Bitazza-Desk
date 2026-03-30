@@ -28,9 +28,13 @@ class ConnectionManager:
             s for s in self._rooms.get(conversation_id, []) if s != ws
         ]
 
-    async def broadcast(self, conversation_id: str, event: dict):
-        """Broadcast to all dashboard connections AND widget subscribers for this conversation."""
-        targets = self.active + self._rooms.get(conversation_id, [])
+    async def broadcast(self, conversation_id: str, event: dict, dashboard_only: bool = False):
+        """Broadcast to all dashboard connections and optionally widget subscribers for this conversation.
+
+        Set dashboard_only=True for internal events (internal notes, copilot summaries) that
+        must never reach the customer-facing widget.
+        """
+        targets = self.active if dashboard_only else self.active + self._rooms.get(conversation_id, [])
         dead = []
         for ws in targets:
             try:

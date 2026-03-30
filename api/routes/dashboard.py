@@ -146,7 +146,7 @@ async def reply_to_conversation(conversation_id: str, body: ReplyRequest, user_i
             "is_internal_note": body.is_internal_note,
             "mentions": [],
         },
-    })
+    }, dashboard_only=body.is_internal_note)
     return {"status": "sent"}
 
 
@@ -186,7 +186,8 @@ async def reply_to_ticket(ticket_id: str, body: ReplyRequest, user_id: str = Dep
             "is_internal_note": body.is_internal_note,
         },
     )
-    update_ticket_status(ticket_id, "in_progress", agent_id=user_id)
+    if not body.is_internal_note:
+        update_ticket_status(ticket_id, "in_progress", agent_id=user_id)
     await manager.broadcast(ticket_id, {
         "type": "new_message",
         "conversation_id": ticket_id,
@@ -201,7 +202,7 @@ async def reply_to_ticket(ticket_id: str, body: ReplyRequest, user_id: str = Dep
             "is_internal_note": body.is_internal_note,
             "mentions": [],
         },
-    })
+    }, dashboard_only=body.is_internal_note)
     return {"status": "sent"}
 
 

@@ -1,8 +1,12 @@
 """
 RAG retriever — queries the vector store for relevant knowledge chunks.
 """
+import logging
+
 from db.vector_store import query
 from config.settings import MAX_RAG_CHUNKS
+
+logger = logging.getLogger(__name__)
 
 # Gemini text-embedding-004 cosine distances: <0.4 = strong match, <0.7 = relevant
 _DISTANCE_THRESHOLD = 0.7
@@ -25,4 +29,5 @@ def retrieve_with_fallback(user_message: str, n: int = MAX_RAG_CHUNKS) -> list[d
     try:
         return retrieve(user_message, n)
     except Exception:
+        logger.exception("Vector DB unavailable or empty — returning no chunks")
         return []

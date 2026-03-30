@@ -66,7 +66,9 @@ def get_client():
     if not _CHROMA_AVAILABLE:
         raise RuntimeError("chromadb not installed. Run: pip install chromadb")
     if _client is None:
-        _client = chromadb.PersistentClient(path=CHROMA_PATH)
+        import os
+        path = os.environ.get("CHROMA_PATH") or CHROMA_PATH
+        _client = chromadb.PersistentClient(path=path)
     return _client
 
 
@@ -81,10 +83,11 @@ def get_collection(name: str = "knowledge_base"):
 def upsert_documents(docs: list[dict], collection_name: str = "knowledge_base") -> None:
     """docs: list of {id, text, metadata}"""
     col = get_collection(collection_name)
+    metadatas = [d.get("metadata") or {"_": "1"} for d in docs]
     col.upsert(
         ids=[d["id"] for d in docs],
         documents=[d["text"] for d in docs],
-        metadatas=[d.get("metadata", {}) for d in docs],
+        metadatas=metadatas,
     )
 
 

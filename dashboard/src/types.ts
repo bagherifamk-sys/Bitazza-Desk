@@ -192,6 +192,7 @@ export interface AnalyticsFilters {
 
 export type WSEvent =
   | { type: 'new_message';      conversation_id: string; message: Message }
+  | { type: 'new_ticket';       ticket: Ticket }
   | { type: 'status_change';    conversation_id: string; status: TicketStatus }
   | { type: 'ticket:updated';   ticketId: string; changes: Partial<Ticket> }
   | { type: 'ticket:assigned';  ticketId: string; agentId: string; agentName?: string | null; agentAvatarUrl?: string | null }

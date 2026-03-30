@@ -57,12 +57,31 @@ class MessageResponse(BaseModel):
 
 
 @router.post("/start", response_model=StartResponse)
-def start_conversation(body: StartRequest, user_id: str = Depends(get_user_id)):
+async def start_conversation(body: StartRequest, user_id: str = Depends(get_user_id)):
+    import time as _time
     init_db()
     cid = create_conversation(user_id=user_id, platform=body.platform, issue_category=body.category)
     agent = pick_agent(body.category)
     assign_ai_persona(cid, agent["name"], agent["avatar"], agent["avatar_url"])
     tid = create_ticket(cid, "ai_handling")
+    await manager.broadcast_all({
+        "type": "new_ticket",
+        "ticket": {
+            "id": tid,
+            "status": "Open_Live",
+            "channel": body.platform if body.platform in ("web", "line", "facebook", "email") else "web",
+            "category": body.category,
+            "priority": 3,
+            "assigned_to": None,
+            "assigned_agent_id": None,
+            "tags": [],
+            "last_message": None,
+            "last_message_at": None,
+            "created_at": int(_time.time()),
+            "updated_at": int(_time.time()),
+            "customer": {"id": user_id, "name": "—", "tier": "Standard"},
+        },
+    })
     return StartResponse(
         conversation_id=cid,
         ticket_id=tid,

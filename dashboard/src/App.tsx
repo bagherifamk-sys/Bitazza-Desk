@@ -740,13 +740,59 @@ export default function App() {
     const connect = () => {
       const ws = createWS((event) => {
         const e = event as WSEvent;
-        if (e.type === 'status_change' || e.type === 'ticket_assigned') loadTickets();
+
+        if (e.type === 'new_ticket') {
+          // Prepend the new ticket to the top of the inbox without a full reload
+          setTickets(prev => {
+            if (prev.some(t => t.id === e.ticket.id)) return prev;
+            return [e.ticket as import('./types').Ticket, ...prev];
+          });
+          return;
+        }
+
+        if (e.type === 'new_message') {
+          // Patch the ticket's last_message and updated_at in place — no API call
+          setTickets(prev => prev.map(t => {
+            if (t.id !== e.conversation_id) return t;
+            return {
+              ...t,
+              last_message: e.message.content,
+              last_message_at: e.message.created_at,
+              updated_at: e.message.created_at,
+            };
+          }));
+          return;
+        }
+
+        if (e.type === 'status_change') {
+          // Patch status in state; if the ticket disappears from current view, full reload will clean it up
+          setTickets(prev => prev.map(t =>
+            t.id === e.conversation_id ? { ...t, status: e.status } : t,
+          ));
+          return;
+        }
+
+        if (e.type === 'ticket_assigned') {
+          setTickets(prev => prev.map(t =>
+            t.id === e.conversation_id
+              ? { ...t, assigned_agent_id: e.agent_id ?? null, assigned_agent_name: e.agent_name ?? null }
+              : t,
+          ));
+          return;
+        }
       });
       ws.onclose = () => setTimeout(connect, 3000);
       wsRef.current = ws;
     };
     connect();
-    return () => wsRef.current?.close();
+
+    // 30-second polling fallback — catches missed WS events (reconnects, server restarts, etc.)
+    const pollInterval = setInterval(() => { loadTickets(); }, 30_000);
+
+    return () => {
+      wsRef.current?.close();
+      clearInterval(pollInterval);
+    };
   }, [user]);
 
   useEffect(() => {

@@ -327,18 +327,21 @@ class BulkActionRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 @router.post("/tickets/bulk")
-def bulk_action(body: BulkActionRequest, user_id: str = Depends(get_user_id)):
+async def bulk_action(body: BulkActionRequest, user_id: str = Depends(get_user_id)):
     results = []
     for tid in body.ticket_ids:
         if body.action == "close":
             update_ticket_status(tid, "closed", agent_id=user_id)
             results.append({"id": tid, "result": "closed"})
+            await manager.broadcast(tid, {"type": "status_change", "conversation_id": tid, "status": "Closed_Resolved"})
         elif body.action == "assign" and body.value:
             update_ticket_status(tid, "assigned", agent_id=body.value)
             results.append({"id": tid, "result": "assigned"})
+            await manager.broadcast(tid, {"type": "ticket_assigned", "conversation_id": tid, "agent_id": body.value})
         elif body.action == "set_status" and body.value:
             update_ticket_status(tid, body.value, agent_id=user_id)
             results.append({"id": tid, "result": body.value})
+            await manager.broadcast(tid, {"type": "status_change", "conversation_id": tid, "status": body.value})
         else:
             results.append({"id": tid, "result": "skipped"})
     return {"results": results}

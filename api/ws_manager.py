@@ -28,6 +28,17 @@ class ConnectionManager:
             s for s in self._rooms.get(conversation_id, []) if s != ws
         ]
 
+    async def broadcast_all(self, event: dict):
+        """Broadcast to all dashboard connections (no conversation scope — e.g. new_ticket)."""
+        dead = []
+        for ws in self.active:
+            try:
+                await ws.send_json(event)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
     async def broadcast(self, conversation_id: str, event: dict, dashboard_only: bool = False):
         """Broadcast to all dashboard connections and optionally widget subscribers for this conversation.
 

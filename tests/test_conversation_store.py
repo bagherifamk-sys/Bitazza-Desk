@@ -52,6 +52,19 @@ def _make_sqlite_conn():
             created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
         )
     """)
+    conn.execute("""
+        CREATE TABLE tags (
+            id TEXT PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE ticket_tags (
+            ticket_id TEXT,
+            tag_id TEXT,
+            PRIMARY KEY (ticket_id, tag_id)
+        )
+    """)
     conn.commit()
     return conn
 

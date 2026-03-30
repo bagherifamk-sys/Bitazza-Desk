@@ -1,12 +1,17 @@
 """AI Copilot — agent-assisting features powered by Gemini Flash."""
 import json
+import logging
+
 from config.settings import GEMINI_API_KEY
+
+logger = logging.getLogger(__name__)
 
 try:
     import google.generativeai as genai
     genai.configure(api_key=GEMINI_API_KEY)
     _model = genai.GenerativeModel("gemini-2.0-flash")
 except Exception:
+    logger.exception("Failed to initialise Gemini model — copilot features disabled")
     _model = None
 
 
@@ -17,6 +22,7 @@ async def _call(prompt: str) -> str:
         resp = _model.generate_content(prompt)
         return resp.text.strip()
     except Exception:
+        logger.exception("Gemini copilot call failed — returning empty string")
         return ""
 
 

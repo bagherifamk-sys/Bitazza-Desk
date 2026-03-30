@@ -1,0 +1,28 @@
+"""
+RAG retriever — queries the vector store for relevant knowledge chunks.
+"""
+from db.vector_store import query
+from config.settings import MAX_RAG_CHUNKS
+
+# Gemini text-embedding-004 cosine distances: <0.4 = strong match, <0.7 = relevant
+_DISTANCE_THRESHOLD = 0.7
+
+
+def retrieve(user_message: str, n: int = MAX_RAG_CHUNKS) -> list[dict]:
+    """
+    Returns top-n relevant knowledge chunks for the given user message.
+    Each chunk: {text, metadata: {source, doc_type, ...}, distance}
+    """
+    chunks = query(user_message, n_results=n)
+    filtered = [c for c in chunks if (c.get("distance") or 1.0) < _DISTANCE_THRESHOLD]
+    return filtered
+
+
+def retrieve_with_fallback(user_message: str, n: int = MAX_RAG_CHUNKS) -> list[dict]:
+    """
+    Retrieves chunks; returns empty list gracefully if vector DB is empty or unavailable.
+    """
+    try:
+        return retrieve(user_message, n)
+    except Exception:
+        return []

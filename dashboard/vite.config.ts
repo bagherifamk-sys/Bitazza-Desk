@@ -1,0 +1,48 @@
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
+
+export default defineConfig({
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.svg', 'icons.svg'],
+      manifest: {
+        name: 'Bitazza Help Desk',
+        short_name: 'HelpDesk',
+        description: 'Bitazza CS Agent Dashboard',
+        theme_color: '#000000',
+        background_color: '#ffffff',
+        display: 'standalone',
+        orientation: 'landscape',
+        scope: '/',
+        start_url: '/',
+        icons: [
+          { src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' },
+        ],
+      },
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+        runtimeCaching: [
+          {
+            urlPattern: /^\/api\//,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'api-cache-v2',
+              networkTimeoutSeconds: 10,
+              plugins: [{ cacheWillUpdate: async ({ response }) => response?.status === 200 ? response : null }],
+            },
+          },
+        ],
+      },
+    }),
+  ],
+  server: {
+    port: 3001,
+    proxy: {
+      '/api': 'http://127.0.0.1:3002',
+      '/uploads': 'http://127.0.0.1:3002',
+    },
+  },
+});

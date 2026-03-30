@@ -1,0 +1,437 @@
+// /api/tickets — CRUD + messages + claim + assign + escalate
+const router   = require('express').Router();
+const pool     = require('../db/pg');
+const { authenticate, requireRole, requirePermission } = require('../middleware/auth');
+const { claimTicketLock, releaseTicketLock, pushQueueBack, pushQueueFront, getAgentSession, keys } = require('../lib/redis');
+const { emitToTicket, emitToSupervisors, emitToAgent } = require('../lib/sockets');
+const { v4: uuidv4 } = require('uuid');
+
+// ── FR-02 Push routing | FR-04 Sticky routing | FR-05 VIP override ────────────
+// Returns assigned agent ID or null (queued).
+async function routeTicket(ticketId, customerId, priority, team = 'default') {
+  // FR-04: Sticky — look for the agent who last handled this customer (12h window)
+  let stickyAgentId = null;
+  try {
+    const { rows } = await pool.query(`
+      SELECT t.assigned_to
+      FROM tickets t
+      WHERE t.customer_id = $1
+        AND t.assigned_to IS NOT NULL
+        AND t.updated_at >= NOW() - INTERVAL '12 hours'
+      ORDER BY t.updated_at DESC
+      LIMIT 1
+    `, [customerId]);
+    stickyAgentId = rows[0]?.assigned_to ?? null;
+  } catch { /* non-fatal */ }
+
+  // FR-02: Find available agents (Available state, under capacity) ordered by
+  // last_assigned_at ASC (least recently used first).
+  const { rows: agents } = await pool.query(`
+    SELECT u.id, u.max_chats,
+      COUNT(t2.id) FILTER (WHERE t2.status NOT IN ('Closed_Resolved','Closed_Unresponsive')) AS active_chats,
+      MAX(t2.updated_at) AS last_assigned_at
+    FROM users u
+    LEFT JOIN tickets t2 ON t2.assigned_to = u.id
+    WHERE u.role IN ('agent','supervisor')
+      AND ($1::text IS NULL OR u.team = $1)
+    GROUP BY u.id, u.max_chats
+    HAVING COUNT(t2.id) FILTER (WHERE t2.status NOT IN ('Closed_Resolved','Closed_Unresponsive')) < u.max_chats
+    ORDER BY last_assigned_at ASC NULLS FIRST
+  `, [team === 'default' ? null : team]);
+
+  // Filter to Available agents by checking Redis session state
+  const availableAgents = [];
+  for (const a of agents) {
+    try {
+      const session = await getAgentSession(a.id);
+      if (session?.state === 'Available') availableAgents.push(a);
+    } catch { /* Redis down — fall back to DB-only list */ availableAgents.push(a); }
+  }
+
+  let assignedTo = null;
+
+  if (stickyAgentId && availableAgents.some(a => a.id === stickyAgentId)) {
+    // FR-04: sticky agent is available — assign to them
+    assignedTo = stickyAgentId;
+  } else if (availableAgents.length > 0) {
+    // FR-02: round-robin (least recently assigned)
+    assignedTo = availableAgents[0].id;
+  }
+
+  if (assignedTo) {
+    const slaMinutes = priority === 1 ? 1 : priority === 2 ? 3 : 10;
+    await pool.query(
+      `UPDATE tickets SET assigned_to=$1, status='Open_Live',
+         sla_deadline=NOW() + ($2 || ' minutes')::interval, updated_at=NOW()
+       WHERE id=$3`,
+      [assignedTo, String(slaMinutes), ticketId]
+    );
+    const { rows: agentInfo } = await pool.query(
+      'SELECT name, avatar_url FROM users WHERE id=$1', [assignedTo]
+    );
+    emitToAgent(assignedTo, 'ticket:assigned', {
+      ticketId,
+      agentId: assignedTo,
+      agentName: agentInfo[0]?.name ?? null,
+      agentAvatarUrl: agentInfo[0]?.avatar_url ?? null,
+    });
+    return assignedTo;
+  }
+
+  // No available agent — queue it
+  // FR-05: VIP (priority=1) goes to front of queue
+  if (priority === 1) {
+    await pushQueueFront(team, ticketId);
+  } else {
+    await pushQueueBack(team, ticketId);
+  }
+
+  emitToSupervisors('capacity:zero_alert', { ticketId, team, priority });
+  return null;
+}
+
+// All ticket routes require auth
+router.use(authenticate);
+
+// ── GET /api/tickets ─────────────────────────────────────────────────────────
+router.get('/', async (req, res) => {
+  const { view = 'all_open', search = '', limit = 50, offset = 0 } = req.query;
+  const agentId = req.user.id;
+
+  let whereClauses = [];
+  let params = [];
+  let p = 1;
+
+  const addParam = (val) => { params.push(val); return `$${p++}`; };
+
+  // View filters
+  switch (view) {
+    case 'mine':
+      whereClauses.push(`t.assigned_to = ${addParam(agentId)}`);
+      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      break;
+    case 'unassigned':
+      whereClauses.push(`t.assigned_to IS NULL`);
+      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      break;
+    case 'sla_risk':
+      whereClauses.push(`t.sla_deadline < NOW() + INTERVAL '30 minutes'`);
+      whereClauses.push(`t.sla_breached = false`);
+      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      break;
+    case 'waiting':
+      whereClauses.push(`t.status = 'Pending_Customer'`);
+      break;
+    case 'by_priority':
+      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      break;
+    default: // all_open
+      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+  }
+
+  if (search) {
+    whereClauses.push(`(c.name ILIKE ${addParam(`%${search}%`)} OR c.email ILIKE ${addParam(`%${search}%`)} OR t.id::text ILIKE ${addParam(`%${search}%`)})`);
+  }
+
+  const where = whereClauses.length ? 'WHERE ' + whereClauses.join(' AND ') : '';
+
+  try {
+    const sql = `
+      SELECT
+        t.id, t.status, t.priority, t.channel, t.category, t.tags,
+        t.sla_deadline, t.sla_breached, t.created_at, t.updated_at,
+        t.assigned_to,
+        c.id          AS customer_id,
+        c.name        AS customer_name,
+        c.email       AS customer_email,
+        c.phone       AS customer_phone,
+        c.tier        AS customer_tier,
+        c.kyc_status  AS customer_kyc_status,
+        c.external_id AS customer_external_id,
+        u.name AS assigned_to_name,
+        (SELECT content FROM messages WHERE ticket_id = t.id ORDER BY created_at DESC LIMIT 1) AS last_message,
+        (SELECT EXTRACT(EPOCH FROM created_at)::bigint FROM messages WHERE ticket_id = t.id ORDER BY created_at DESC LIMIT 1) AS last_message_at
+      FROM tickets t
+      LEFT JOIN customers c ON t.customer_id = c.id
+      LEFT JOIN users u ON t.assigned_to = u.id
+      ${where}
+      ORDER BY t.priority ASC, t.updated_at DESC
+      LIMIT ${addParam(parseInt(limit))} OFFSET ${addParam(parseInt(offset))}
+    `;
+    const { rows } = await pool.query(sql, params);
+    res.json(rows.map(t => ({
+      id:               t.id,
+      status:           t.status,
+      priority:         t.priority,
+      channel:          t.channel,
+      category:         t.category,
+      tags:             t.tags ?? [],
+      sla_deadline:     t.sla_deadline,
+      sla_breached:     t.sla_breached,
+      created_at:       t.created_at,
+      updated_at:       t.updated_at,
+      assigned_to:      t.assigned_to,
+      assigned_to_name: t.assigned_to_name,
+      last_message:     t.last_message,
+      last_message_at:  t.last_message_at,
+      customer: {
+        id:         t.customer_id,
+        user_id:    t.customer_external_id ?? t.customer_id,
+        name:       t.customer_name  ?? '—',
+        email:      t.customer_email ?? null,
+        phone:      t.customer_phone ?? null,
+        tier:       t.customer_tier  ?? 'Standard',
+        kyc_status: t.customer_kyc_status ?? null,
+      },
+    })));
+  } catch (err) {
+    console.error('[tickets] list error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── GET /api/tickets/:id ─────────────────────────────────────────────────────
+router.get('/:id', async (req, res) => {
+  try {
+    const { rows: tRows } = await pool.query(`
+      SELECT t.*, c.id AS customer_id, c.name AS customer_name, c.email AS customer_email,
+             c.phone AS customer_phone, c.tier AS customer_tier,
+             c.kyc_status AS customer_kyc_status, c.external_id AS customer_external_id,
+             c.bitazza_uid, c.line_uid, c.fb_psid,
+             u.name AS assigned_to_name
+      FROM tickets t
+      LEFT JOIN customers c ON t.customer_id = c.id
+      LEFT JOIN users u ON t.assigned_to = u.id
+      WHERE t.id = $1
+    `, [req.params.id]);
+
+    if (!tRows.length) return res.status(404).json({ error: 'Not found' });
+
+    const { rows: msgs } = await pool.query(
+      'SELECT * FROM messages WHERE ticket_id = $1 ORDER BY created_at ASC',
+      [req.params.id]
+    );
+
+    const ticket = tRows[0];
+    res.json({
+      ...ticket,
+      customer: {
+        id:         ticket.customer_id,
+        user_id:    ticket.customer_external_id ?? ticket.customer_id,
+        name:       ticket.customer_name  ?? '—',
+        email:      ticket.customer_email ?? null,
+        phone:      ticket.customer_phone ?? null,
+        tier:       ticket.customer_tier  ?? 'Standard',
+        kyc_status: ticket.customer_kyc_status ?? null,
+        bitazza_uid: ticket.bitazza_uid,
+        line_uid:   ticket.line_uid,
+        fb_psid:    ticket.fb_psid,
+      },
+      history: msgs.map(m => ({
+        id: m.id,
+        role: m.sender_type,
+        sender_type: m.sender_type,
+        content: m.content,
+        agent_name: null, // TODO: join users
+        is_internal_note: m.sender_type === 'internal_note',
+        created_at: Math.floor(new Date(m.created_at).getTime() / 1000),
+        metadata: m.metadata ?? {},
+      })),
+    });
+  } catch (err) {
+    console.error('[tickets] get error:', err.message, err.stack);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PATCH /api/tickets/:id/status ────────────────────────────────────────────
+router.patch('/:id/status', requirePermission('inbox.close'), async (req, res) => {
+  const { status } = req.body;
+  const valid = ['Open_Live','In_Progress','Pending_Customer','Closed_Resolved','Closed_Unresponsive','Orphaned','Escalated'];
+  if (!valid.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  try {
+    await pool.query('UPDATE tickets SET status=$1, updated_at=NOW() WHERE id=$2', [status, req.params.id]);
+    emitToTicket(req.params.id, 'ticket:updated', { ticketId: req.params.id, changes: { status } });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PATCH /api/tickets/:id/priority ──────────────────────────────────────────
+router.patch('/:id/priority', async (req, res) => {
+  const { priority } = req.body;
+  if (![1,2,3].includes(Number(priority))) return res.status(400).json({ error: 'Invalid priority' });
+  try {
+    await pool.query('UPDATE tickets SET priority=$1, updated_at=NOW() WHERE id=$2', [priority, req.params.id]);
+    emitToTicket(req.params.id, 'ticket:updated', { ticketId: req.params.id, changes: { priority } });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PATCH /api/tickets/:id/assign ────────────────────────────────────────────
+// FR-14: owner_id NEVER changes; only assigned_to + team update
+router.patch('/:id/assign', requirePermission('inbox.assign'), async (req, res) => {
+  const { assigned_to, team, handoff_note } = req.body;
+  try {
+    await pool.query(
+      `UPDATE tickets SET assigned_to=$1, team=COALESCE($2,team), updated_at=NOW() WHERE id=$3`,
+      [assigned_to || null, team || null, req.params.id]
+    );
+    if (handoff_note) {
+      await pool.query(
+        'INSERT INTO messages (ticket_id, sender_type, sender_id, content) VALUES ($1,$2,$3,$4)',
+        [req.params.id, 'system', req.user.id, `Assigned to ${team || 'agent'}: ${handoff_note}`]
+      );
+    }
+    let agentName = null, agentAvatarUrl = null;
+    if (assigned_to) {
+      const { rows: ai } = await pool.query('SELECT name, avatar_url FROM users WHERE id=$1', [assigned_to]);
+      agentName = ai[0]?.name ?? null;
+      agentAvatarUrl = ai[0]?.avatar_url ?? null;
+    }
+    emitToTicket(req.params.id, 'ticket:assigned', {
+      ticketId: req.params.id,
+      agentId: assigned_to,
+      agentName,
+      agentAvatarUrl,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PATCH /api/tickets/:id/tags ───────────────────────────────────────────────
+router.patch('/:id/tags', async (req, res) => {
+  const { tags } = req.body;
+  if (!Array.isArray(tags)) return res.status(400).json({ error: 'tags must be array' });
+  try {
+    await pool.query('UPDATE tickets SET tags=$1, updated_at=NOW() WHERE id=$2', [tags, req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/tickets/:id/messages ───────────────────────────────────────────
+router.post('/:id/messages', requirePermission('inbox.reply'), async (req, res) => {
+  const { content, is_note = false, channel } = req.body;
+  if (!content?.trim()) return res.status(400).json({ error: 'content required' });
+
+  const senderType = is_note ? 'internal_note' : 'agent';
+  // Validate channel if provided (FR-08)
+  const VALID_CHANNELS = ['web', 'line', 'facebook', 'email'];
+  const replyChannel = VALID_CHANNELS.includes(channel) ? channel : null;
+
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO messages (ticket_id, sender_type, sender_id, content, metadata)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [req.params.id, senderType, req.user.id, content.trim(),
+       replyChannel ? JSON.stringify({ channel: replyChannel }) : '{}']
+    );
+    // Update ticket status to In_Progress on first agent reply
+    if (!is_note) {
+      await pool.query(
+        `UPDATE tickets SET status='In_Progress', updated_at=NOW() WHERE id=$1 AND status='Open_Live'`,
+        [req.params.id]
+      );
+    }
+    const msg = rows[0];
+    emitToTicket(req.params.id, 'new_message', {
+      message: {
+        id: msg.id,
+        role: msg.sender_type,
+        sender_type: msg.sender_type,
+        content: msg.content,
+        agent_name: req.user.name,
+        is_internal_note: senderType === 'internal_note',
+        created_at: Math.floor(new Date(msg.created_at).getTime() / 1000),
+      },
+    });
+    res.json({ ok: true, message: msg });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/tickets/:id/claim (FR-03 email pull) ───────────────────────────
+router.post('/:id/claim', requirePermission('inbox.claim'), async (req, res) => {
+  const ticketId = req.params.id;
+  const won = await claimTicketLock(ticketId);
+  if (!won) {
+    // Find who has it
+    const { rows } = await pool.query(
+      'SELECT u.name FROM tickets t JOIN users u ON t.assigned_to=u.id WHERE t.id=$1',
+      [ticketId]
+    );
+    const name = rows[0]?.name ?? 'another agent';
+    return res.status(409).json({ error: `Ticket already claimed by ${name}` });
+  }
+  try {
+    await pool.query(
+      `UPDATE tickets SET assigned_to=$1, owner_id=COALESCE(owner_id,$1), status='In_Progress', updated_at=NOW() WHERE id=$2`,
+      [req.user.id, ticketId]
+    );
+    await releaseTicketLock(ticketId);
+    const { rows: ai } = await pool.query('SELECT name, avatar_url FROM users WHERE id=$1', [req.user.id]);
+    emitToTicket(ticketId, 'ticket:assigned', {
+      ticketId,
+      agentId: req.user.id,
+      agentName: ai[0]?.name ?? null,
+      agentAvatarUrl: ai[0]?.avatar_url ?? null,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    await releaseTicketLock(ticketId);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/tickets/:id/escalate ───────────────────────────────────────────
+router.post('/:id/escalate', requirePermission('inbox.escalate'), async (req, res) => {
+  const { reason } = req.body;
+  try {
+    await pool.query(
+      `UPDATE tickets SET status='Escalated', updated_at=NOW() WHERE id=$1`,
+      [req.params.id]
+    );
+    await pool.query(
+      `INSERT INTO messages (ticket_id, sender_type, content) VALUES ($1,'system',$2)`,
+      [req.params.id, `Escalated: ${reason || 'no reason given'}`]
+    );
+    emitToSupervisors('ticket:escalated', { ticketId: req.params.id, reason });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/tickets (create) ────────────────────────────────────────────────
+router.post('/', async (req, res) => {
+  const { customer_id, channel, category, priority = 3, team = 'default' } = req.body;
+  if (!customer_id || !channel) return res.status(400).json({ error: 'customer_id and channel required' });
+  const p = Number(priority);
+  if (![1,2,3].includes(p)) return res.status(400).json({ error: 'priority must be 1, 2, or 3' });
+  const id = uuidv4();
+  try {
+    await pool.query(
+      `INSERT INTO tickets (id, customer_id, channel, category, priority, team)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id, customer_id, channel, category, p, team]
+    );
+    // FR-02/04/05: auto-route on creation
+    const assignedTo = await routeTicket(id, customer_id, p, team).catch(err => {
+      console.warn('[route] routing failed:', err.message);
+      return null;
+    });
+    res.status(201).json({ id, assigned_to: assignedTo });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+module.exports = router;

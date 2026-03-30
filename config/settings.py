@@ -1,0 +1,49 @@
+"""Central config — all values from environment variables."""
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# AI
+GEMINI_API_KEY: str = os.environ["GEMINI_API_KEY"]
+MODEL: str = "gemini-2.0-flash"
+MAX_TOKENS: int = 1024
+MAX_RAG_CHUNKS: int = int(os.getenv("MAX_RAG_CHUNKS", "5"))
+
+# Freshdesk
+FRESHDESK_API_KEY: str = os.environ["FRESHDESK_API_KEY"]
+FRESHDESK_SUBDOMAIN: str = os.environ["FRESHDESK_SUBDOMAIN"]
+
+# Database
+DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/csbot")
+CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./data/chroma")
+
+# Environment
+ENV: str = os.getenv("ENV", "development")  # set to "production" in prod
+
+# Auth
+JWT_SECRET: str = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
+JWT_ALGORITHM: str = "HS256"
+
+# Escalation
+ESCALATION_CONFIDENCE_THRESHOLD: float = float(os.getenv("ESCALATION_CONFIDENCE_THRESHOLD", "0.6"))
+ESCALATION_KEYWORDS: list[str] = ["fraud", "hack", "stolen", "lawyer", "regulation", "complaint", "sue", "police", "scam"]
+ESCALATION_HUMAN_PHRASES: list[str] = [
+    "human", "agent", "person", "real support", "talk to someone", "speak to",
+    "connect me", "transfer me", "escalate", "specialist", "specialized team",
+    "kyc team", "support team", "live agent", "live support", "real person",
+    "ต่อสาย", "คุยกับคน", "เจ้าหน้าที่", "ทีม", "โอนสาย",
+]
+
+# Rate limiting
+RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
+
+# User / KYC API
+USE_MOCK_USER_API: bool = os.getenv("USE_MOCK_USER_API", "true").lower() == "true"
+USER_API_BASE_URL: str = os.getenv("USER_API_BASE_URL", "http://localhost:8000")
+USER_API_KEY: str = os.getenv("USER_API_KEY", "mock-dev-token")
+
+# Freedom / Bitazza internal APIs
+FREEDOM_API_URL: str = os.getenv("FREEDOM_API_URL", "")
+BITAZZA_API_URL: str = os.getenv("BITAZZA_API_URL", "")
+INTERNAL_API_KEY: str = os.getenv("INTERNAL_API_KEY", "")

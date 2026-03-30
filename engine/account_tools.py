@@ -1,0 +1,179 @@
+"""
+Account context tools — fetch live user data from Freedom/Bitazza backends.
+All functions require an authenticated user_id from JWT (never from user message).
+
+User profile + KYC data flow
+─────────────────────────────
+Development  : USE_MOCK_USER_API=true  → calls the local mock FastAPI router
+Production   : USE_MOCK_USER_API=false → calls USER_API_BASE_URL with USER_API_KEY
+               (API key sent as Bearer token; server is IP-whitelisted on the provider side)
+
+To switch to the real API set these two env vars and flip the flag — no other code changes needed.
+"""
+import requests
+from google import genai  # noqa: F401 — just to confirm settings load
+from config import settings
+
+# ── User/KYC API config ──────────────────────────────────────────────────────
+_USE_MOCK = settings.USE_MOCK_USER_API
+_USER_API_BASE = settings.USER_API_BASE_URL
+_USER_API_KEY = settings.USER_API_KEY
+
+_USER_HEADERS = {
+    "Authorization": f"Bearer {_USER_API_KEY}",
+    "Content-Type": "application/json",
+}
+
+# ── Other internal API base URLs ─────────────────────────────────────────────
+FREEDOM_API_URL = settings.FREEDOM_API_URL
+BITAZZA_API_URL = settings.BITAZZA_API_URL
+INTERNAL_API_KEY = settings.INTERNAL_API_KEY
+
+_HEADERS = {"x-internal-api-key": INTERNAL_API_KEY, "Content-Type": "application/json"}
+
+
+def _get(base_url: str, path: str) -> dict:
+    """Generic internal API GET. Returns {} on failure."""
+    if not base_url:
+        return {"error": "API not configured"}
+    try:
+        r = requests.get(f"{base_url}{path}", headers=_HEADERS, timeout=5)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _user_api_get(param: str, value: str) -> dict:
+    """
+    Single-user lookup against the User/KYC API (mock or real).
+    param: one of 'user_id', 'email', 'phone'
+    """
+    prefix = "/mock" if _USE_MOCK else ""
+    url = f"{_USER_API_BASE}{prefix}/user"
+    try:
+        r = requests.get(url, params={param: value}, headers=_USER_HEADERS, timeout=5)
+        if r.status_code == 404:
+            return {"error": "user_not_found"}
+        if r.status_code == 401:
+            return {"error": "unauthorized"}
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Public tool functions (called by agent.py) ──────────────────────────────
+
+def get_user_profile(user_id: str) -> dict:
+    """
+    Returns full user profile including KYC status for the authenticated user.
+    Lookup is always by the JWT-derived user_id — never by client-supplied data.
+
+    Response keys: user_id, first_name, last_name, email, phone, tier,
+                   kyc.status, kyc.rejection_reason, kyc.reviewed_at
+    """
+    return _user_api_get("user_id", user_id)
+
+
+def get_kyc_status(user_id: str) -> dict:
+    """
+    Returns KYC verification status for the user (convenience wrapper).
+    Delegates to get_user_profile and extracts the kyc sub-object.
+    """
+    profile = get_user_profile(user_id)
+    if "error" in profile:
+        return profile
+    return profile.get("kyc", {"error": "kyc data missing from profile"})
+
+
+def get_deposit_status(user_id: str, tx_id: str | None = None) -> dict:
+    """
+    Returns recent deposit status or a specific deposit by tx_id.
+    Expected: {status: pending|completed|failed, amount: float, currency: str, updated_at: str}
+    """
+    # return _get(BITAZZA_API_URL, f"/internal/users/{user_id}/deposits" + (f"/{tx_id}" if tx_id else ""))
+    return {"status": "stub", "amount": None, "currency": None, "updated_at": ""}
+
+
+def get_withdrawal_status(user_id: str, tx_id: str | None = None) -> dict:
+    """
+    Returns recent withdrawal status or a specific withdrawal by tx_id.
+    Expected: {status: pending|completed|failed|on_hold, amount: float, currency: str, updated_at: str}
+    """
+    # return _get(BITAZZA_API_URL, f"/internal/users/{user_id}/withdrawals" + (f"/{tx_id}" if tx_id else ""))
+    return {"status": "stub", "amount": None, "currency": None, "updated_at": ""}
+
+
+def get_account_restrictions(user_id: str) -> dict:
+    """
+    Returns active account restrictions.
+    Expected: {restrictions: [str], reason: str}
+    """
+    # return _get(FREEDOM_API_URL, f"/internal/users/{user_id}/restrictions")
+    return {"restrictions": [], "reason": "stub — API not yet configured"}
+
+
+def get_trading_availability(user_id: str) -> dict:
+    """
+    Returns whether trading is available for the user.
+    Expected: {available: bool, reason: str}
+    """
+    # return _get(BITAZZA_API_URL, f"/internal/users/{user_id}/trading-availability")
+    return {"available": True, "reason": "stub — API not yet configured"}
+
+
+# ── Tool registry for agent.py ───────────────────────────────────────────────
+
+TOOLS = {
+    "get_user_profile": get_user_profile,
+    "get_kyc_status": get_kyc_status,
+    "get_deposit_status": get_deposit_status,
+    "get_withdrawal_status": get_withdrawal_status,
+    "get_account_restrictions": get_account_restrictions,
+    "get_trading_availability": get_trading_availability,
+}
+
+# Gemini function declarations (for function calling)
+TOOL_DEFINITIONS = [
+    {
+        "name": "get_user_profile",
+        "description": (
+            "Get the full profile of the authenticated user, including their name, email, "
+            "phone number, account tier, and KYC verification status. "
+            "Use this when the customer asks about their account details or KYC status."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_kyc_status",
+        "description": "Get only the KYC verification status for the authenticated user.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_deposit_status",
+        "description": "Get deposit status for the authenticated user. Optionally specify a transaction ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {"tx_id": {"type": "string", "description": "Optional transaction ID"}},
+        },
+    },
+    {
+        "name": "get_withdrawal_status",
+        "description": "Get withdrawal status for the authenticated user. Optionally specify a transaction ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {"tx_id": {"type": "string", "description": "Optional transaction ID"}},
+        },
+    },
+    {
+        "name": "get_account_restrictions",
+        "description": "Get any active restrictions or freezes on the authenticated user's account.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_trading_availability",
+        "description": "Check whether trading is currently available for the authenticated user.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+]

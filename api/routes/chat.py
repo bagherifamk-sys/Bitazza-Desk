@@ -1,0 +1,202 @@
+"""Chat API routes — user-facing message endpoint."""
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+from api.middleware.auth import get_user_id
+from api.ws_manager import manager
+from db.conversation_store import init_db, create_conversation, add_message, get_history, create_ticket, assign_ai_persona, get_ai_persona, is_human_handling, update_ticket_category
+from engine.agent import chat
+from engine.mock_agents import pick_agent
+from engine.prompt_templates import build_greeting
+
+router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+class StartRequest(BaseModel):
+    platform: str = "web"  # "freedom" | "bitazza" | "web"
+    category: str | None = None  # issue category pre-selected in widget
+
+
+class StartResponse(BaseModel):
+    conversation_id: str
+    ticket_id: str
+    agent_name: str
+    agent_avatar: str
+    agent_avatar_url: str
+
+
+class GreetRequest(BaseModel):
+    conversation_id: str
+    language: str = "en"  # "en" | "th"
+
+
+class GreetResponse(BaseModel):
+    greeting: str
+    language: str
+    bot_name: str
+    agent_avatar: str | None = None
+    agent_avatar_url: str | None = None
+
+
+class MessageRequest(BaseModel):
+    conversation_id: str
+    message: str
+    consecutive_low_confidence: int = 0  # tracked client-side
+    category: str | None = None  # issue category selected by user in widget
+
+
+class MessageResponse(BaseModel):
+    reply: str | None  # None means a human agent is handling — widget must not render a bot bubble
+    language: str
+    escalated: bool
+    ticket_id: str | None = None
+    agent_name: str | None = None
+    agent_avatar: str | None = None
+    agent_avatar_url: str | None = None
+    offer_resolution: bool = False
+    specialist_intro: str | None = None  # First message from the incoming specialist agent
+
+
+@router.post("/start", response_model=StartResponse)
+def start_conversation(body: StartRequest, user_id: str = Depends(get_user_id)):
+    init_db()
+    cid = create_conversation(user_id=user_id, platform=body.platform, issue_category=body.category)
+    agent = pick_agent(body.category)
+    assign_ai_persona(cid, agent["name"], agent["avatar"], agent["avatar_url"])
+    tid = create_ticket(cid, "ai_handling")
+    return StartResponse(
+        conversation_id=cid,
+        ticket_id=tid,
+        agent_name=agent["name"],
+        agent_avatar=agent["avatar"],
+        agent_avatar_url=agent["avatar_url"],
+    )
+
+
+class SetCategoryRequest(BaseModel):
+    conversation_id: str
+    category: str
+
+
+class SetCategoryResponse(BaseModel):
+    agent_name: str
+    agent_avatar: str
+    agent_avatar_url: str
+
+
+@router.post("/set-category", response_model=SetCategoryResponse)
+def set_category(body: SetCategoryRequest, user_id: str = Depends(get_user_id)):
+    """
+    Called when the user selects an issue category in the widget.
+    Re-assigns the AI persona to the specialist agent for that category
+    and updates the ticket category for the dashboard.
+    """
+    agent = pick_agent(body.category)
+    assign_ai_persona(body.conversation_id, agent["name"], agent["avatar"], agent["avatar_url"])
+    update_ticket_category(body.conversation_id, body.category)
+    return SetCategoryResponse(
+        agent_name=agent["name"],
+        agent_avatar=agent["avatar"],
+        agent_avatar_url=agent["avatar_url"],
+    )
+
+
+@router.post("/greet", response_model=GreetResponse)
+def greet(body: GreetRequest, user_id: str = Depends(get_user_id)):
+    """
+    Called immediately after language selection.
+    Returns the AI bot's introduction message and persists it as the first assistant message.
+    """
+    lang = body.language if body.language in ("en", "th") else "en"
+    persona = get_ai_persona(body.conversation_id)
+    greeting = build_greeting(persona["name"], lang)
+    add_message(body.conversation_id, "assistant", greeting)
+    return GreetResponse(
+        greeting=greeting,
+        language=lang,
+        bot_name=persona["name"],
+        agent_avatar=persona["avatar"],
+        agent_avatar_url=persona["avatar_url"],
+    )
+
+
+@router.post("/message", response_model=MessageResponse)
+def send_message(body: MessageRequest, user_id: str = Depends(get_user_id)):
+    if not body.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    # Persist user message
+    add_message(body.conversation_id, "user", body.message)
+
+    # Guard: once handed off to a human agent, the AI must not reply.
+    # reply=None tells the widget to suppress the bot bubble entirely;
+    # the human agent's response will arrive via WebSocket.
+    if is_human_handling(body.conversation_id):
+        return MessageResponse(
+            reply=None,
+            language="en",
+            escalated=True,
+        )
+
+    # Run agent
+    result = chat(
+        conversation_id=body.conversation_id,
+        user_id=user_id,
+        user_message=body.message,
+        consecutive_low_confidence=body.consecutive_low_confidence,
+        category=body.category,
+    )
+
+    # Persist assistant reply
+    add_message(body.conversation_id, "assistant", result.text, {
+        "escalated": result.escalated,
+        "escalation_reason": result.escalation_reason,
+    })
+
+    return MessageResponse(
+        reply=result.text,
+        language=result.language,
+        escalated=result.escalated,
+        ticket_id=result.ticket_id,
+        agent_name=result.agent_name,
+        agent_avatar=result.agent_avatar,
+        agent_avatar_url=result.agent_avatar_url,
+        offer_resolution=result.resolved,
+        specialist_intro=result.specialist_intro,
+    )
+
+
+class CSATRequest(BaseModel):
+    ticket_id: str
+    score: int  # 1–5
+
+
+@router.post("/csat")
+def submit_csat(body: CSATRequest, user_id: str = Depends(get_user_id)):
+    if not 1 <= body.score <= 5:
+        raise HTTPException(status_code=400, detail="Score must be between 1 and 5")
+    from db.conversation_store import submit_csat_score
+    submit_csat_score(body.ticket_id, body.score)
+    return {"ok": True}
+
+
+@router.get("/history/{conversation_id}")
+def get_conversation_history(conversation_id: str, user_id: str = Depends(get_user_id)):
+    return {"history": get_history(conversation_id, limit=50)}
+
+
+@router.websocket("/ws/{conversation_id}")
+async def widget_ws(websocket: WebSocket, conversation_id: str):
+    """
+    Widget subscribes here after starting a conversation.
+    When a human agent replies, the dashboard broadcasts a `new_message` event
+    which is forwarded here — the widget renders it without polling.
+    """
+    await manager.connect_widget(websocket, conversation_id)
+    try:
+        while True:
+            # Keep connection alive; widget sends pings as {"type": "ping"}
+            data = await websocket.receive_json()
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        manager.disconnect_widget(websocket, conversation_id)

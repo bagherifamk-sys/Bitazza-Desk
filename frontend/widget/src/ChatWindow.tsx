@@ -1,0 +1,568 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import type { Message, CSBotConfig, IssueCategory } from './types';
+import { ISSUE_CATEGORIES } from './types';
+import { startConversation, sendMessage, fetchHistory, greetConversation, setCategoryAgent, getStoredSession, storeSessionLang, storeSessionCategory, storeSessionAgent, clearStoredSession } from './api';
+import MessageBubble from './MessageBubble';
+import TypingIndicator from './TypingIndicator';
+import CategoryPicker from './CategoryPicker';
+
+function playNotificationBeep() {
+  try {
+    const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.25);
+    osc.onended = () => ctx.close();
+  } catch {
+    // AudioContext unavailable — fail silently
+  }
+}
+
+const UI_TEXT = {
+  en: {
+    placeholder: 'Type your message...',
+    send: 'Send',
+    header: 'Support',
+    escalationBanner: 'Connecting you to a support agent...',
+    errorRetry: 'Failed to send. Tap to retry.',
+    welcome: 'Hey there! 😊 What can I help you with today?',
+  },
+  th: {
+    placeholder: 'พิมพ์ข้อความของคุณ...',
+    send: 'ส่ง',
+    header: 'ฝ่ายสนับสนุน',
+    escalationBanner: 'กำลังเชื่อมต่อกับเจ้าหน้าที่สนับสนุน...',
+    errorRetry: 'ส่งไม่สำเร็จ แตะเพื่อลองใหม่',
+    welcome: 'สวัสดีค่ะ! 😊 วันนี้มีอะไรให้ช่วยได้บ้างคะ?',
+  },
+};
+
+
+interface Props {
+  cfg: CSBotConfig;
+  onClose: () => void;
+}
+
+export default function ChatWindow({ cfg, onClose }: Props) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [escalated, setEscalated] = useState(false);
+  const [escalatedAgent, setEscalatedAgent] = useState<{ name: string; avatar: string; avatarUrl: string | null } | null>(null);
+  const [agentConnectedBanner, setAgentConnectedBanner] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lang, setLang] = useState<'en' | 'th'>(cfg.lang ?? 'en');
+  const [langSelected, setLangSelected] = useState(!!cfg.lang);
+  const [convId, setConvId] = useState<string | null>(null);
+  const [consecutiveLow, setConsecutiveLow] = useState(0);
+  const [botName, setBotName] = useState<string | null>(null);
+  const [botAvatarUrl, setBotAvatarUrl] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<IssueCategory | null>(null);
+  const [resolutionRejections, setResolutionRejections] = useState(0);
+  const [csatPending, setCsatPending] = useState(false);
+  const [csatSubmitted, setCsatSubmitted] = useState(false);
+  const lastAgentMsgTime = useRef(0);
+  const lastFailedText = useRef('');
+  const sendRef = useRef<((text: string, category?: string) => Promise<void>) | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const t = UI_TEXT[lang];
+
+  // Init conversation — restore if session exists, otherwise start fresh
+  useEffect(() => {
+    const existing = getStoredSession();
+    if (existing) {
+      // Resume: load history from backend
+      setConvId(existing.id);
+      // Restore lang selection from session if available
+      if (existing.lang) {
+        setLang(existing.lang);
+        setLangSelected(true);
+      }
+      // Restore category from session if available
+      if (existing.category) {
+        setSelectedCategory(existing.category as IssueCategory);
+      }
+      fetchHistory(cfg, existing.id).then((history) => {
+        if (history.length === 0) {
+          // Session exists but no messages — show greeting
+          showGreeting();
+          if (existing.lang) setLangSelected(false); // reset so lang picker shows again
+          return;
+        }
+        // Always use the latest agent message from history as ground truth
+        const firstAgentMsg = history.find((m) => m.role === 'agent');
+        const restoredAgent = firstAgentMsg?.agent_name ? {
+          name: firstAgentMsg.agent_name,
+          avatar: firstAgentMsg.agent_avatar ?? firstAgentMsg.agent_name[0].toUpperCase(),
+          avatarUrl: firstAgentMsg.agent_avatar_url ?? null,
+        } : (existing.agent ?? null);
+        if (restoredAgent) {
+          setEscalated(true);
+          setEscalatedAgent(restoredAgent);
+        }
+        const restored: Message[] = history.map((m) => ({
+          id: `restored-${m.created_at}`,
+          role: m.role as Message['role'],
+          content: m.content,
+          timestamp: m.created_at * 1000,
+          agentName: m.agent_name ?? restoredAgent?.name,
+          agentAvatar: m.agent_avatar ?? restoredAgent?.avatar,
+          agentAvatarUrl: m.agent_avatar_url ?? restoredAgent?.avatarUrl ?? undefined,
+        }));
+        setMessages(restored);
+        // If any agent message exists, mark as escalated
+        if (history.some((m) => m.role === 'agent')) setEscalated(true);
+      }).catch(() => {
+        // Session is stale/unreachable — clear it and start fresh
+        clearStoredSession();
+        setLangSelected(false);
+        showGreeting();
+        startConversation(cfg)
+          .then((id) => setConvId(id))
+          .catch(() => setError('Could not connect. Please refresh.'));
+      });
+    } else {
+      showGreeting();
+      startConversation(cfg)
+        .then((id) => setConvId(id))
+        .catch(() => setError('Could not connect. Please refresh.'));
+    }
+  }, []);
+
+  function showGreeting() {
+    const now = Date.now();
+    setMessages([
+      {
+        id: 'greeting-en',
+        role: 'assistant',
+        content: '👋 Welcome to Freedom / Bitazza Support!\n\nPlease select your preferred language:',
+        timestamp: now,
+      },
+      {
+        id: 'greeting-th',
+        role: 'assistant',
+        content: 'ยินดีต้อนรับสู่ฝ่ายสนับสนุน Freedom / Bitazza!\n\nกรุณาเลือกภาษาที่คุณต้องการ:',
+        timestamp: now + 1,
+      },
+    ]);
+  }
+
+  const selectCategory = useCallback((category: IssueCategory) => {
+    setSelectedCategory(category);
+    storeSessionCategory(category);
+    // Tell backend to re-assign the specialist agent for this category
+    if (convId) {
+      setCategoryAgent(cfg, convId, category).then(({ agentName, agentAvatarUrl }) => {
+        setBotName(agentName);
+        setBotAvatarUrl(agentAvatarUrl || null);
+      }).catch(() => {/* non-critical — persona update fails silently */});
+    }
+    const cat = ISSUE_CATEGORIES.find((c) => c.key === category)!;
+    const openingMsg = cat.openingMessage[lang];
+    sendRef.current?.(openingMsg, category);
+  }, [convId, cfg, lang]);
+
+  const selectLanguage = useCallback((selected: 'en' | 'th') => {
+    setLang(selected);
+    setLangSelected(true);
+    storeSessionLang(selected);
+    if (convId) {
+      greetConversation(cfg, convId, selected).then(({ greeting, botName: name, botAvatarUrl: avatarUrl }) => {
+        setBotName(name);
+        setBotAvatarUrl(avatarUrl);
+        setMessages((prev) => [...prev, {
+          id: 'welcome',
+          role: 'assistant',
+          content: greeting,
+          timestamp: Date.now(),
+        }]);
+      }).catch(() => {
+        // Fallback to local text if API call fails
+        setMessages((prev) => [...prev, {
+          id: 'welcome',
+          role: 'assistant',
+          content: UI_TEXT[selected].welcome,
+          timestamp: Date.now(),
+        }]);
+      });
+    } else {
+      setMessages((prev) => [...prev, {
+        id: 'welcome',
+        role: 'assistant',
+        content: UI_TEXT[selected].welcome,
+        timestamp: Date.now(),
+      }]);
+    }
+  }, [convId, cfg]);
+
+  // Auto-scroll
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
+  // Focus input on open
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Poll for agent messages
+  useEffect(() => {
+    if (!convId) return;
+    // Only show agent messages sent after the widget opened
+    const startedAt = Math.floor(Date.now() / 1000);
+    lastAgentMsgTime.current = startedAt;
+
+    const poll = async () => {
+      const history = await fetchHistory(cfg, convId);
+      const newAgentMsgs = history.filter(
+        (m) => m.role === 'agent' && m.created_at > lastAgentMsgTime.current
+      );
+      if (newAgentMsgs.length > 0) {
+        lastAgentMsgTime.current = newAgentMsgs[newAgentMsgs.length - 1].created_at;
+        playNotificationBeep();
+        // Prefer identity already known from escalation response; fall back to message metadata
+        const firstMsg = newAgentMsgs[0];
+        setEscalated(true);
+        if (firstMsg.agent_name) {
+          const agent = {
+            name: firstMsg.agent_name,
+            avatar: firstMsg.agent_avatar ?? firstMsg.agent_name[0].toUpperCase(),
+            avatarUrl: firstMsg.agent_avatar_url ?? null,
+          };
+          setEscalatedAgent(agent);
+          storeSessionAgent(agent);
+          setAgentConnectedBanner((prev) => prev ?? firstMsg.agent_name ?? null);
+        }
+        setTimeout(() => setAgentConnectedBanner(null), 7000);
+        setMessages((prev) => [
+          ...prev,
+          ...newAgentMsgs.map((m) => ({
+            id: `agent-${m.created_at}`,
+            role: 'agent' as const,
+            content: m.content,
+            timestamp: m.created_at * 1000,
+            agentName: m.agent_name,
+            agentAvatar: m.agent_avatar,
+            agentAvatarUrl: m.agent_avatar_url ?? null,
+          })),
+        ]);
+      }
+    };
+    const interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [convId, cfg]);
+
+  const send = useCallback(async (text: string, category?: string) => {
+    if (!text.trim() || !convId || loading) return;
+    setError(null);
+
+    const trimmed = text.trim();
+    const userMsg: Message = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: trimmed,
+      timestamp: Date.now(),
+    };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput('');
+    setLoading(true);
+
+    try {
+      lastFailedText.current = '';
+      const activeCategory = category ?? selectedCategory ?? undefined;
+      const result = await sendMessage(cfg, convId, trimmed, consecutiveLow, activeCategory);
+      setLang(result.language as 'en' | 'th');
+
+      // reply is null when a human is already handling — suppress the bot bubble entirely
+      if (result.reply !== null) {
+        const assistantMsg: Message = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: result.reply,
+          timestamp: Date.now(),
+          escalated: result.escalated,
+        };
+        playNotificationBeep();
+        setMessages((prev) => [...prev, assistantMsg]);
+      }
+
+      if (result.offerResolution && !escalated) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant' as const,
+            content: lang === 'th'
+              ? 'ปัญหาของคุณได้รับการแก้ไขแล้วหรือยังคะ?'
+              : 'Did this resolve your issue?',
+            timestamp: Date.now(),
+            offerResolution: true,
+          },
+        ]);
+      }
+
+      if (result.escalated) {
+        setEscalated(true);
+        // Don't set escalatedAgent here — we don't know yet which real human will pick up.
+        // It gets set once the human agent sends their first message (via polling).
+        setConsecutiveLow(0);
+      } else {
+        setConsecutiveLow(0);
+      }
+    } catch {
+      lastFailedText.current = trimmed;
+      setError(t.errorRetry);
+      // Keep user message visible but mark error
+    } finally {
+      setLoading(false);
+      inputRef.current?.focus();
+    }
+  }, [convId, loading, consecutiveLow, selectedCategory, cfg, t]);
+
+  // Keep sendRef current so selectCategory can call send before it's in scope
+  useEffect(() => { sendRef.current = send; }, [send]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send(input);
+    }
+  };
+
+  const primaryColor = cfg.primaryColor ?? '#6366f1';
+
+  return (
+    <div className="csbot-window flex flex-col w-[380px] h-[560px] rounded-2xl overflow-hidden">
+      {/* Header */}
+      <div
+        className="csbot-header flex items-center justify-between px-4 py-3 text-white relative overflow-hidden"
+        style={{ background: `linear-gradient(135deg, ${primaryColor} 0%, ${primaryColor}cc 100%)` }}
+      >
+        {/* subtle shine overlay */}
+        <div className="absolute inset-0 bg-white/5 pointer-events-none" />
+        <div className="relative flex items-center gap-3">
+          <div className="csbot-avatar-ring w-8 h-8 rounded-full bg-white/20 flex items-center justify-center font-bold text-sm overflow-hidden">
+            {escalatedAgent ? (
+              escalatedAgent.avatarUrl ? (
+                <img src={escalatedAgent.avatarUrl} alt={escalatedAgent.name} className="w-full h-full object-cover" />
+              ) : (
+                escalatedAgent.avatar
+              )
+            ) : botName ? botName[0].toUpperCase() : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1 1 .03 2.798-1.414 2.798H4.213c-1.444 0-2.414-1.798-1.414-2.798L4.2 15.3" />
+              </svg>
+            )}
+          </div>
+          <div>
+            <div className="font-semibold text-sm leading-tight">{escalatedAgent?.name ?? botName ?? t.header}</div>
+            <div className="flex items-center gap-1 mt-0.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
+              <span className="text-white/70 text-[10px]">
+                {escalatedAgent ? 'Live agent — connected' : 'Online — typically replies instantly'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          className="relative w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+          aria-label="Close"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Escalation banner */}
+      {(escalated && !escalatedAgent) || agentConnectedBanner ? (
+        <div className="csbot-escalation-banner px-4 py-2 text-xs flex items-center justify-center gap-2">
+          {agentConnectedBanner ? (
+            <>
+              {escalatedAgent?.avatarUrl ? (
+                <img src={escalatedAgent.avatarUrl} alt={escalatedAgent.name} className="w-5 h-5 rounded-full" />
+              ) : escalatedAgent?.avatar ? (
+                <span className="w-5 h-5 rounded-full bg-amber-400 text-white flex items-center justify-center font-bold text-[10px]">
+                  {escalatedAgent.avatar}
+                </span>
+              ) : null}
+              <span><strong>{agentConnectedBanner}</strong> is connected</span>
+            </>
+          ) : (
+            <>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+              </svg>
+              <span>{t.escalationBanner}</span>
+            </>
+          )}
+        </div>
+      ) : null}
+
+      {/* Messages */}
+      <div className="csbot-messages flex-1 overflow-y-auto px-4 py-4 space-y-1">
+        {messages.map((m) => <MessageBubble key={m.id} message={m} primaryColor={primaryColor} botName={botName} botAvatarUrl={botAvatarUrl} escalatedAgent={escalatedAgent} />)}
+        {(() => {
+          const lastResMsg = [...messages].reverse().find((m) => m.offerResolution);
+          if (!lastResMsg || csatPending || csatSubmitted) return null;
+          if (messages[messages.length - 1]?.id !== lastResMsg.id) return null;
+          return (
+            <div className="flex gap-2 justify-center pt-1 pb-2">
+              <button
+                onClick={() => setCsatPending(true)}
+                className="px-5 py-2 rounded-full text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 transition-colors"
+              >
+                {lang === 'th' ? '✓ แก้ไขแล้ว' : '✓ Yes, resolved'}
+              </button>
+              <button
+                onClick={() => {
+                  const newCount = resolutionRejections + 1;
+                  setResolutionRejections(newCount);
+                  if (newCount >= 2) {
+                    setMessages((prev) => prev.map((m) =>
+                      m.id === lastResMsg.id ? { ...m, offerResolution: false } : m
+                    ));
+                    send(lang === 'th' ? 'ขอคุยกับเจ้าหน้าที่' : 'I need to speak to a human agent');
+                  } else {
+                    setMessages((prev) => prev.map((m) =>
+                      m.id === lastResMsg.id
+                        ? { ...m, offerResolution: false, content: lang === 'th' ? 'ขอโทษที่ยังไม่ได้ช่วยแก้ปัญหา กรุณาอธิบายปัญหาเพิ่มเติมได้เลยค่ะ' : 'Sorry to hear that! Please describe what\'s still not resolved and I\'ll do my best to help.' }
+                        : m
+                    ));
+                  }
+                }}
+                className="px-5 py-2 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+              >
+                {lang === 'th' ? '✗ ยังไม่แก้ไข' : '✗ No, I need more help'}
+              </button>
+            </div>
+          );
+        })()}
+        {csatPending && !csatSubmitted && (
+          <div className="flex flex-col items-center gap-3 py-4 px-2">
+            <p className="text-sm text-gray-600 font-medium text-center">
+              {lang === 'th' ? 'กรุณาให้คะแนนประสบการณ์การบริการของคุณ' : 'Please rate your support experience'}
+            </p>
+            <div className="flex gap-2">
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button
+                  key={star}
+                  onClick={async () => {
+                    if (!convId) return;
+                    try {
+                      await fetch(`${cfg.apiUrl}/chat/csat`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...(cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {}) },
+                        body: JSON.stringify({ ticket_id: convId, score: star }),
+                      });
+                    } catch { /* non-critical */ }
+                    setCsatSubmitted(true);
+                    clearStoredSession();
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: crypto.randomUUID(),
+                        role: 'assistant' as const,
+                        content: lang === 'th'
+                          ? 'ขอบคุณสำหรับคะแนนของคุณ! ดีใจที่ได้ช่วยเหลือค่ะ 😊'
+                          : 'Thanks for your feedback! Glad we could help 😊',
+                        timestamp: Date.now(),
+                      },
+                    ]);
+                  }}
+                  className="text-3xl hover:scale-110 transition-transform"
+                  aria-label={`${star} star`}
+                >
+                  ⭐
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {csatSubmitted && (
+          <div className="text-center text-xs text-gray-400 py-2">
+            {lang === 'th' ? 'การสนทนานี้ปิดแล้ว' : 'This conversation is closed.'}
+          </div>
+        )}
+        {!langSelected && (
+          <div className="flex gap-2 justify-center pt-2 pb-1">
+            <button
+              onClick={() => selectLanguage('en')}
+              disabled={!convId}
+              className="csbot-lang-btn px-5 py-2 rounded-full text-xs font-semibold transition-all disabled:opacity-40"
+              style={{ '--lang-color': primaryColor } as React.CSSProperties}
+            >
+              🇬🇧 English
+            </button>
+            <button
+              onClick={() => selectLanguage('th')}
+              disabled={!convId}
+              className="csbot-lang-btn px-5 py-2 rounded-full text-xs font-semibold transition-all disabled:opacity-40"
+              style={{ '--lang-color': primaryColor } as React.CSSProperties}
+            >
+              🇹🇭 ภาษาไทย
+            </button>
+          </div>
+        )}
+        {langSelected && !selectedCategory && !escalated && (
+          <CategoryPicker
+            lang={lang}
+            primaryColor={primaryColor}
+            onSelect={selectCategory}
+            disabled={loading || !convId}
+          />
+        )}
+        {loading && <TypingIndicator />}
+        {error && (
+          <button
+            className="w-full text-center text-xs text-red-400 py-2 hover:text-red-500 transition-colors"
+            onClick={() => send(lastFailedText.current)}
+          >
+            ↻ {error}
+          </button>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input */}
+      <div className="csbot-input-area px-3 py-3 flex gap-2 items-center">
+        <input
+          ref={inputRef}
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={!langSelected ? 'Select a language / เลือกภาษา' : !selectedCategory ? (lang === 'th' ? 'เลือกประเภทปัญหาด้านบน' : 'Select an issue type above') : t.placeholder}
+          disabled={loading || !convId || !langSelected || !selectedCategory || csatPending || csatSubmitted}
+          className="csbot-input flex-1 text-sm px-4 py-2.5 outline-none disabled:opacity-40"
+        />
+        <button
+          onClick={() => send(input)}
+          disabled={loading || !input.trim() || !convId || !langSelected || !selectedCategory || csatPending || csatSubmitted}
+          className="csbot-send-btn w-9 h-9 rounded-full flex items-center justify-center text-white transition-all disabled:opacity-30"
+          style={{ background: `linear-gradient(135deg, ${primaryColor}, ${primaryColor}cc)` }}
+          aria-label={t.send}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Footer branding */}
+      <div className="csbot-footer text-center py-1.5 text-[10px]">
+        Powered by <span className="font-semibold">CS Bot</span>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,79 @@
+"""
+Security and compliance filters.
+- pre_filter: runs BEFORE sending to Claude (blocks malicious inputs)
+- post_filter: runs AFTER Claude response (strips policy violations)
+"""
+import re
+
+# ── Patterns ──────────────────────────────────────────────────────────────────
+
+_INJECTION_PATTERNS = [
+    r"ignore (previous|above|all) instructions",
+    r"you are now",
+    r"act as (a|an|the)\s+\w+",
+    r"pretend (you are|to be)",
+    r"disregard (your|all) (instructions|rules|guidelines)",
+    r"reveal (your|the) (system prompt|instructions|prompt)",
+    r"what (is|are) your (instructions|system prompt)",
+    r"jailbreak",
+    r"DAN mode",
+    r"developer mode",
+    r"bypass (safety|filter|restriction)",
+]
+
+_SOCIAL_ENGINEERING_PATTERNS = [
+    r"my (friend|colleague|boss|manager) at (bitazza|freedom)",
+    r"i (work|am employed) (at|for) (bitazza|freedom)",
+    r"this is an? (internal|admin|staff|employee) (test|check|request)",
+    r"give me (admin|root|full|all) access",
+    r"reset (all|every) (password|account)",
+    r"transfer (all|the) funds",
+]
+
+_FINANCIAL_ADVICE_PATTERNS = [
+    r"\b(should i|would you recommend|is it (a )?good (idea|time) to) (buy|sell|invest|hold|trade)\b",
+    r"\bwill (the )?(price|btc|eth|bitcoin|ethereum|crypto) (go|rise|fall|drop|increase|decrease)\b",
+    r"\bprice prediction\b",
+    r"\bbest (coin|token|crypto|investment)\b",
+]
+
+_PII_PATTERNS = [
+    (r"\b\d{13}\b", "[ID_NUMBER]"),                          # Thai national ID
+    (r"\b[A-Z]{2}\d{7}\b", "[PASSPORT]"),                   # Passport
+    (r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b", "[CARD_NUMBER]"),  # Card number
+]
+
+
+def _matches_any(text: str, patterns: list[str]) -> bool:
+    text_lower = text.lower()
+    return any(re.search(p, text_lower) for p in patterns)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+class FilterResult:
+    def __init__(self, allowed: bool, reason: str = ""):
+        self.allowed = allowed
+        self.reason = reason
+
+
+def pre_filter(user_message: str) -> FilterResult:
+    """Block prompt injection and social engineering before calling Claude."""
+    if _matches_any(user_message, _INJECTION_PATTERNS):
+        return FilterResult(False, "prompt_injection")
+    if _matches_any(user_message, _SOCIAL_ENGINEERING_PATTERNS):
+        return FilterResult(False, "social_engineering")
+    return FilterResult(True)
+
+
+def post_filter(response_text: str) -> str:
+    """Scrub PII and flag policy violations in Claude's response."""
+    text = response_text
+    # Redact PII patterns
+    for pattern, replacement in _PII_PATTERNS:
+        text = re.sub(pattern, replacement, text)
+    return text
+
+
+def contains_financial_advice_request(user_message: str) -> bool:
+    return _matches_any(user_message, _FINANCIAL_ADVICE_PATTERNS)

@@ -35,3 +35,33 @@ def should_escalate(
     return False, ""
 
 
+_HEDGE_PHRASES = [
+    "i'm not sure", "i don't know", "not certain", "i cannot", "i can't",
+    "unclear", "unsure", "no information", "ไม่แน่ใจ", "ไม่ทราบ",
+]
+
+
+def estimate_confidence(response: str, rag_chunks: list) -> float:
+    """
+    Heuristic confidence score in [0, 1] for a generated response.
+
+    Starts at a base score, boosts when RAG chunks back the answer,
+    and penalises hedging language or very short replies.
+    """
+    score = 0.7
+
+    # Boost when supporting chunks were retrieved
+    if rag_chunks:
+        score += 0.2
+
+    # Penalise hedging language
+    response_lower = response.lower()
+    hedge_hits = sum(1 for p in _HEDGE_PHRASES if p in response_lower)
+    if hedge_hits:
+        score -= 0.2 * hedge_hits
+
+    # Penalise very short replies (likely non-answers)
+    if len(response.strip()) < 20:
+        score -= 0.3
+
+    return max(0.0, min(1.0, score))

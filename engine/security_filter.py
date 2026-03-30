@@ -33,14 +33,16 @@ _SOCIAL_ENGINEERING_PATTERNS = [
 _FINANCIAL_ADVICE_PATTERNS = [
     r"\b(should i|would you recommend|is it (a )?good (idea|time) to) (buy|sell|invest|hold|trade)\b",
     r"\bwill (the )?(price|btc|eth|bitcoin|ethereum|crypto) (go|rise|fall|drop|increase|decrease)\b",
+    r"\bwill (btc|eth|bitcoin|ethereum|crypto) price\b",
     r"\bprice prediction\b",
     r"\bbest (coin|token|crypto|investment)\b",
 ]
 
 _PII_PATTERNS = [
-    (r"\b\d{13}\b", "[ID_NUMBER]"),                          # Thai national ID
+    (r"\b\d{13}\b", "[PHONE_OR_ID]"),                        # Thai national ID / phone
     (r"\b[A-Z]{2}\d{7}\b", "[PASSPORT]"),                   # Passport
     (r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b", "[CARD_NUMBER]"),  # Card number
+    (r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b", "[EMAIL]"),  # Email
 ]
 
 

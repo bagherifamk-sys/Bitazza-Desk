@@ -1,6 +1,116 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-*, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+/* ── Design Tokens: Dark Theme (default) ─────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  --surface-0: #080A0C;
+  --surface-1: #0F1115;
+  --surface-2: #14171D;
+  --surface-3: #1C2028;
+  --surface-4: #252A34;
+  --surface-5: #2E3441;
+
+  --text-primary:   #F0F2F5;
+  --text-secondary: #8B92A5;
+  --text-muted:     #4A5166;
+}
+
+/* ── Design Tokens: Light Theme ──────────────────────────────────────────── */
+[data-theme="light"] {
+  --surface-0: #FFFFFF;
+  --surface-1: #F4F6F9;
+  --surface-2: #FFFFFF;
+  --surface-3: #F4F6F9;
+  --surface-4: #EEF0F4;
+  --surface-5: #DDE1E9;
+
+  --text-primary:   #0D0F12;
+  --text-secondary: #6B7280;
+  --text-muted:     #9CA3AF;
+}
+
+/* ── Global Resets ───────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  height: 100%;
+  background-color: var(--surface-0);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+}
+
+/* ── Focus Visible ───────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid #E63946;
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ── Scrollbar Styling ───────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-5);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4A5166;
+}
+
+/* ── Text Selection ──────────────────────────────────────────────────────── */
+::selection {
+  background: rgba(230, 57, 70, 0.25);
+  color: var(--text-primary);
+}
+
+/* ── Reduced Motion ──────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Utilities ───────────────────────────────────────────────────────────── */
+.font-inter-nums {
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+/* Prevent layout shift from scrollbar appearing */
+html {
+  scrollbar-gutter: stable;
+}

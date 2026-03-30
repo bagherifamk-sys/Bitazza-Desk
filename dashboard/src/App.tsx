@@ -30,7 +30,6 @@ function getAuthUser(): AuthUser | null {
     const raw = localStorage.getItem('auth_user');
     if (!raw) return null;
     const u = JSON.parse(raw) as AuthUser;
-    // Stale session — no permissions embedded (pre-RBAC login). Force re-login.
     if (!u.permissions || u.permissions.length === 0) {
       localStorage.removeItem('auth_user');
       return null;
@@ -44,6 +43,17 @@ function setAuthUser(u: AuthUser | null) {
   else localStorage.removeItem('auth_user');
 }
 
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+function getTheme(): 'dark' | 'light' {
+  return (localStorage.getItem('theme') as 'dark' | 'light') ?? 'dark';
+}
+
+function applyTheme(t: 'dark' | 'light') {
+  document.documentElement.setAttribute('data-theme', t);
+  localStorage.setItem('theme', t);
+}
+
 // ── Permission guard ──────────────────────────────────────────────────────────
 
 function PermissionGuard({ permission, user, children }: { permission: string; user: AuthUser | null; children: React.ReactNode }) {
@@ -52,7 +62,6 @@ function PermissionGuard({ permission, user, children }: { permission: string; u
   return <>{children}</>;
 }
 
-// Helper — check if current user has a permission (used for conditional UI)
 export function hasPerm(user: AuthUser | null, permission: string): boolean {
   return (user?.permissions ?? []).includes(permission);
 }
@@ -62,50 +71,118 @@ export function hasPerm(user: AuthUser | null, permission: string): boolean {
 function LoginPage({ onLogin }: { onLogin: (u: AuthUser) => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!email || !password) { setError('Enter email and password'); return; }
+    if (!email || !password) { setError('Enter your email and password to continue.'); return; }
+    setLoading(true);
     try {
       const data = await api.login(email.trim().toLowerCase(), password);
-      onLogin({ ...data.user, role: data.user.role as Role, token: data.token });
+      onLogin({ ...data.user, role: data.user.role as Role, token: data.token, permissions: (data.user as { permissions?: string[] }).permissions ?? [] });
       navigate('/', { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : 'Login failed. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
-      <form onSubmit={handleSubmit} className="w-80 bg-[#1A1A1A] border border-[#2A2A2A] p-8 rounded-xl">
-        <div className="flex items-center gap-2 mb-7">
-          <div className="w-7 h-7 rounded bg-[#E63946] flex items-center justify-center">
-            <span className="text-white text-xs font-bold">B</span>
+    <div className="min-h-screen flex items-center justify-center bg-surface-0 relative overflow-hidden">
+      {/* Ambient background texture */}
+      <svg className="absolute bottom-0 right-0 opacity-[0.04] pointer-events-none" width="600" height="400" viewBox="0 0 600 400" fill="none">
+        <polyline points="0,300 60,250 120,280 180,200 240,220 300,160 360,180 420,120 480,140 540,80 600,100" stroke="#E63946" strokeWidth="2" fill="none"/>
+        <polyline points="0,350 60,310 120,330 180,260 240,275 300,210 360,230 420,170 480,185 540,130 600,150" stroke="#E63946" strokeWidth="1.5" fill="none"/>
+        <polyline points="0,380 60,355 120,365 180,320 240,330 300,285 360,295 420,250 480,260 540,215 600,230" stroke="#E63946" strokeWidth="1" fill="none"/>
+      </svg>
+
+      <form
+        onSubmit={handleSubmit}
+        className="w-96 bg-surface-3 ring-1 ring-surface-5 shadow-modal rounded-xl p-8 relative z-10 animate-scale-in"
+      >
+        {/* Logo */}
+        <div className="flex items-center gap-3 mb-8">
+          <div className="w-8 h-8 rounded-md bg-brand flex items-center justify-center shrink-0">
+            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5}
+                d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 01-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 011-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 011.52 0C14.51 3.81 17 5 19 5a1 1 0 011 1z"/>
+            </svg>
           </div>
-          <span className="text-white font-bold text-sm">Bitazza Help Desk</span>
+          <div>
+            <div className="text-text-primary font-bold text-md leading-tight">Bitazza Help Desk</div>
+            <div className="text-text-muted text-xs">Customer Support Platform</div>
+          </div>
         </div>
-        {error && <p className="text-[#E63946] text-xs mb-4">{error}</p>}
-        <label className="block text-[11px] text-[#888] mb-1 uppercase tracking-wide">Email</label>
+
+        {/* Error banner */}
+        {error && (
+          <div className="flex items-start gap-2.5 bg-red-950/60 ring-1 ring-red-800/60 rounded-md p-3 mb-5">
+            <svg className="w-4 h-4 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+            </svg>
+            <p className="text-red-300 text-xs leading-relaxed">{error}</p>
+          </div>
+        )}
+
+        {/* Email field */}
+        <label className="block text-xs font-medium text-text-secondary mb-1.5">Email address</label>
         <input
-          type="email" value={email} onChange={e => setEmail(e.target.value)}
-          className="w-full bg-[#111] border border-[#2A2A2A] text-white px-3 py-2 text-sm mb-4 rounded-lg outline-none focus:border-[#E63946] transition-colors placeholder:text-[#444]"
+          type="email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          className="w-full bg-surface-2 ring-1 ring-surface-5 text-text-primary px-3 py-2.5 text-sm mb-4 rounded-md outline-none focus:ring-brand transition-all placeholder:text-text-muted"
           placeholder="agent@bitazza.com"
+          autoComplete="email"
         />
-        <label className="block text-[11px] text-[#888] mb-1 uppercase tracking-wide">Password</label>
-        <input
-          type="password" value={password} onChange={e => setPassword(e.target.value)}
-          className="w-full bg-[#111] border border-[#2A2A2A] text-white px-3 py-2 text-sm mb-6 rounded-lg outline-none focus:border-[#E63946] transition-colors"
-        />
-        <button type="submit"
-          className="w-full bg-[#E63946] text-white text-sm py-2.5 rounded-lg hover:bg-[#c8303c] transition-colors font-semibold">
-          Sign in
+
+        {/* Password field */}
+        <label className="block text-xs font-medium text-text-secondary mb-1.5">Password</label>
+        <div className="relative mb-6">
+          <input
+            type={showPwd ? 'text' : 'password'}
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            className="w-full bg-surface-2 ring-1 ring-surface-5 text-text-primary px-3 py-2.5 pr-10 text-sm rounded-md outline-none focus:ring-brand transition-all"
+            autoComplete="current-password"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPwd(v => !v)}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary transition-colors"
+            tabIndex={-1}
+          >
+            {showPwd ? (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"/>
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+            )}
+          </button>
+        </div>
+
+        {/* Submit */}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full bg-brand hover:bg-brand-dim text-white text-sm py-2.5 rounded-md transition-colors font-semibold flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {loading && (
+            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+          )}
+          {loading ? 'Signing in…' : 'Sign in'}
         </button>
-        <p className="text-[10px] text-[#555] mt-4 text-center">
-          Use "supervisor@…" or "admin@…" for elevated roles
-        </p>
       </form>
     </div>
   );
@@ -116,15 +193,24 @@ function LoginPage({ onLogin }: { onLogin: (u: AuthUser) => void }) {
 const AGENT_STATES: AgentStatus[] = ['Available', 'Busy', 'Break', 'Offline'];
 
 const STATE_DOT: Record<string, string> = {
-  Available: 'bg-[#22C55E]',
-  Busy: 'bg-[#F59E0B]',
-  Break: 'bg-[#888]',
-  Offline: 'bg-[#E63946]',
+  Available: 'bg-accent-green',
+  Busy:      'bg-accent-amber',
+  Break:     'bg-text-muted',
+  Offline:   'bg-brand',
 };
 
 const STATE_LABEL: Record<AgentStatus, string> = {
   Available: 'Available', Busy: 'Busy', Break: 'Break', Offline: 'Offline',
   away: 'Away', after_call_work: 'ACW',
+};
+
+const STATE_DESC: Record<AgentStatus, string> = {
+  Available: 'Ready to receive tickets',
+  Busy: 'In a conversation, limited availability',
+  Break: 'On break, tickets remain assigned',
+  Offline: 'Offline, tickets will be re-queued',
+  away: 'Away temporarily',
+  after_call_work: 'Post-call wrap-up',
 };
 
 interface AgentToggleProps {
@@ -158,42 +244,61 @@ function AgentStateToggle({ status, activeChats, onChange }: AgentToggleProps) {
       <div ref={ref} className="relative">
         <button
           onClick={() => setOpen(o => !o)}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#E5E5E5] bg-white hover:bg-[#F8F8F8] transition-colors text-xs"
+          className="flex items-center gap-2 px-3 h-9 rounded-md ring-1 ring-surface-5 bg-surface-3 hover:bg-surface-4 transition-colors text-xs"
         >
-          <span className={`w-2 h-2 rounded-full ${STATE_DOT[status] ?? 'bg-[#888]'}`} />
-          <span className="text-[#333] font-medium">{STATE_LABEL[status]}</span>
-          <svg className="w-3 h-3 text-[#999]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${STATE_DOT[status] ?? 'bg-text-muted'} ${status === 'Available' ? 'relative' : ''}`}>
+            {status === 'Available' && (
+              <span className="absolute inset-0 rounded-full bg-accent-green animate-ping opacity-75" />
+            )}
+          </span>
+          <span className="text-text-primary font-medium">{STATE_LABEL[status]}</span>
+          <svg className="w-3 h-3 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
         </button>
+
         {open && (
-          <div className="absolute right-0 top-full mt-1 w-36 bg-white border border-[#E5E5E5] rounded-lg shadow-lg overflow-hidden z-50">
+          <div className="absolute right-0 top-full mt-1.5 w-52 bg-surface-3 ring-1 ring-surface-5 rounded-lg shadow-panel overflow-hidden z-50 animate-slide-in-up">
             {AGENT_STATES.map(s => (
               <button key={s} onClick={() => handleSelect(s)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs hover:bg-[#F8F8F8] transition-colors ${s === status ? 'font-semibold text-[#111]' : 'text-[#444]'}`}>
-                <span className={`w-2 h-2 rounded-full ${STATE_DOT[s]}`} />
-                {STATE_LABEL[s]}
+                className={`w-full flex items-start gap-3 px-3.5 py-2.5 text-xs hover:bg-surface-4 transition-colors text-left ${s === status ? 'bg-surface-4' : ''}`}
+              >
+                <span className={`w-2 h-2 rounded-full mt-1 shrink-0 ${STATE_DOT[s]}`} />
+                <div>
+                  <div className={`font-medium ${s === status ? 'text-text-primary' : 'text-text-secondary'}`}>{STATE_LABEL[s]}</div>
+                  <div className="text-text-muted text-[11px] mt-0.5">{STATE_DESC[s]}</div>
+                </div>
+                {s === status && (
+                  <svg className="w-3.5 h-3.5 text-brand ml-auto mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
+                  </svg>
+                )}
               </button>
             ))}
           </div>
         )}
       </div>
 
+      {/* Offline confirmation modal */}
       {pending && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white border border-[#E5E5E5] p-6 w-80 rounded-xl shadow-xl">
-            <h3 className="font-bold text-sm mb-2 text-[#111]">Go Offline?</h3>
-            <p className="text-sm text-[#555] mb-5">
-              You have <strong>{activeChats}</strong> active chat{activeChats !== 1 ? 's' : ''}.
-              Going offline will re-queue them.
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade-in">
+          <div className="bg-surface-3 ring-1 ring-surface-5 p-6 w-80 rounded-xl shadow-modal animate-scale-in">
+            <div className="w-10 h-10 rounded-full bg-brand/10 ring-1 ring-brand/20 flex items-center justify-center mb-4">
+              <svg className="w-5 h-5 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+              </svg>
+            </div>
+            <h3 className="font-bold text-sm mb-1.5 text-text-primary">Go Offline?</h3>
+            <p className="text-sm text-text-secondary mb-5 leading-relaxed">
+              You have <strong className="text-text-primary font-semibold">{activeChats}</strong> active chat{activeChats !== 1 ? 's' : ''}. Going offline will re-queue them for other agents.
             </p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setPending(null)}
-                className="px-4 py-1.5 text-sm border border-[#E5E5E5] rounded-lg hover:bg-[#F8F8F8] transition-colors">
+                className="px-4 py-1.5 text-sm ring-1 ring-surface-5 rounded-md hover:bg-surface-4 transition-colors text-text-secondary active:scale-[0.98]">
                 Cancel
               </button>
               <button onClick={() => { onChange(pending); setPending(null); }}
-                className="px-4 py-1.5 text-sm bg-[#E63946] text-white rounded-lg hover:bg-[#c8303c] transition-colors">
+                className="px-4 py-1.5 text-sm bg-brand text-white rounded-md hover:bg-brand-dim transition-colors active:scale-[0.98]">
                 Go Offline
               </button>
             </div>
@@ -204,7 +309,7 @@ function AgentStateToggle({ status, activeChats, onChange }: AgentToggleProps) {
   );
 }
 
-// ── Icons (inline SVG) ────────────────────────────────────────────────────────
+// ── Icons ────────────────────────────────────────────────────────────────────
 
 const Icons = {
   home: (
@@ -266,6 +371,24 @@ const Icons = {
         d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
     </svg>
   ),
+  sun: (
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+    </svg>
+  ),
+  moon: (
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+    </svg>
+  ),
+  search: (
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+    </svg>
+  ),
 };
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -275,14 +398,15 @@ interface NavItem {
   label: string;
   icon: React.ReactNode;
   permission: string;
+  shortcut?: string;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/',           label: 'Home',       icon: Icons.home,       permission: 'section.home' },
-  { to: '/inbox',      label: 'Inbox',      icon: Icons.inbox,      permission: 'section.inbox' },
-  { to: '/supervisor', label: 'Supervisor', icon: Icons.supervisor, permission: 'section.supervisor' },
-  { to: '/analytics',  label: 'Analytics',  icon: Icons.analytics,  permission: 'section.analytics' },
-  { to: '/metrics',    label: 'Metrics',    icon: Icons.metrics,    permission: 'section.metrics' },
+  { to: '/',           label: 'Home',       icon: Icons.home,       permission: 'section.home',       shortcut: '⌘2' },
+  { to: '/inbox',      label: 'Inbox',      icon: Icons.inbox,      permission: 'section.inbox',      shortcut: '⌘1' },
+  { to: '/supervisor', label: 'Supervisor', icon: Icons.supervisor, permission: 'section.supervisor', shortcut: '⌘3' },
+  { to: '/analytics',  label: 'Analytics',  icon: Icons.analytics,  permission: 'section.analytics',  shortcut: '⌘4' },
+  { to: '/metrics',    label: 'Metrics',    icon: Icons.metrics,    permission: 'section.metrics',    shortcut: '⌘5' },
   { to: '/studio',     label: 'AI Studio',  icon: Icons.studio,     permission: 'section.studio' },
   { to: '/admin',      label: 'Admin',      icon: Icons.admin,      permission: 'section.admin' },
 ];
@@ -297,18 +421,29 @@ const PAGE_TITLES: Record<string, string> = {
   '/admin':      'Admin',
 };
 
+// Auto-generate avatar color from name (consistent per name)
+function nameToColor(name: string): string {
+  const colors = ['#E63946','#3B82F6','#22C55E','#F59E0B','#8B5CF6','#EC4899','#14B8A6','#F97316'];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return colors[Math.abs(hash) % colors.length];
+}
+
 interface SidebarProps {
   user: AuthUser;
   collapsed: boolean;
   onToggle: () => void;
   onLogout: () => void;
+  theme: 'dark' | 'light';
+  onThemeToggle: () => void;
 }
 
-function Sidebar({ user, collapsed, onToggle, onLogout }: SidebarProps) {
+function Sidebar({ user, collapsed, onToggle, onLogout, theme, onThemeToggle }: SidebarProps) {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const visibleItems = NAV_ITEMS.filter(n => (user.permissions ?? []).includes(n.permission));
   const initials = user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  const avatarColor = nameToColor(user.name);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -320,66 +455,90 @@ function Sidebar({ user, collapsed, onToggle, onLogout }: SidebarProps) {
 
   return (
     <aside
-      className="flex flex-col bg-[#0F0F0F] shrink-0 transition-all duration-200 ease-in-out"
+      className="flex flex-col bg-surface-1 shrink-0 border-r border-surface-5 transition-all duration-200 ease-out-expo"
       style={{ width: collapsed ? 56 : 220 }}
     >
       {/* Logo */}
-      <div className={`flex items-center gap-3 px-3.5 h-12 border-b border-[#1E1E1E] shrink-0 ${collapsed ? 'justify-center' : ''}`}>
-        <div className="w-7 h-7 rounded bg-[#E63946] flex items-center justify-center shrink-0">
-          <span className="text-white text-xs font-bold">B</span>
+      <div className={`flex items-center gap-3 px-3.5 h-12 border-b border-surface-5 shrink-0 ${collapsed ? 'justify-center' : ''}`}>
+        <div className="w-7 h-7 rounded-md bg-brand flex items-center justify-center shrink-0">
+          <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5}
+              d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 01-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 011-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 011.52 0C14.51 3.81 17 5 19 5a1 1 0 011 1z"/>
+          </svg>
         </div>
         {!collapsed && (
-          <span className="text-white font-bold text-sm whitespace-nowrap">Bitazza CS</span>
+          <span className="text-text-primary font-bold text-sm whitespace-nowrap">Help Desk</span>
         )}
       </div>
 
       {/* Nav items */}
-      <nav className="flex-1 py-3 overflow-y-auto overflow-x-hidden">
+      <nav className="flex-1 py-2 overflow-y-auto overflow-x-hidden">
         {visibleItems.map(item => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.to === '/'}
-            title={collapsed ? item.label : undefined}
+            title={collapsed ? `${item.label}${item.shortcut ? '  ' + item.shortcut : ''}` : undefined}
             className={({ isActive }) =>
-              `flex items-center gap-3 mx-2 px-2.5 py-2.5 rounded-lg mb-0.5 transition-colors
+              `flex items-center gap-3 mx-2 px-2.5 py-2.5 rounded-md mb-0.5 transition-colors duration-100
                ${isActive
-                 ? 'bg-[#1A1A1A] text-white border-l-2 border-[#E63946] pl-[9px]'
-                 : 'text-[#888] hover:text-white hover:bg-[#1A1A1A]'
+                 ? 'bg-brand-subtle text-text-primary border-l-2 border-brand pl-[9px]'
+                 : 'text-text-secondary hover:text-text-primary hover:bg-surface-4'
                }`
             }
           >
             <span className="shrink-0">{item.icon}</span>
             {!collapsed && (
-              <span className="text-[13px] font-medium whitespace-nowrap">{item.label}</span>
+              <span className="text-sm font-medium whitespace-nowrap flex-1">{item.label}</span>
             )}
           </NavLink>
         ))}
       </nav>
 
-      {/* Bottom: user + collapse toggle */}
-      <div className="border-t border-[#1E1E1E] py-3 shrink-0">
+      {/* Bottom: theme + user + collapse */}
+      <div className="border-t border-surface-5 py-2 shrink-0">
+        {/* Theme toggle */}
+        <button
+          onClick={onThemeToggle}
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          className={`w-full flex items-center gap-3 px-3 py-2 mx-0 text-text-muted hover:text-text-secondary hover:bg-surface-4 transition-colors ${collapsed ? 'justify-center' : 'mx-2'}`}
+          style={{ width: collapsed ? undefined : 'calc(100% - 16px)', marginLeft: collapsed ? 0 : 8 }}
+        >
+          <span className="shrink-0">{theme === 'dark' ? Icons.sun : Icons.moon}</span>
+          {!collapsed && <span className="text-xs">{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>}
+        </button>
+
         {/* User menu */}
-        <div ref={menuRef} className="relative mx-2 mb-2">
+        <div ref={menuRef} className="relative mx-2 mt-1">
           <button
             onClick={() => setShowUserMenu(o => !o)}
-            className={`w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-[#1A1A1A] transition-colors ${collapsed ? 'justify-center' : ''}`}
+            className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md hover:bg-surface-4 transition-colors ${collapsed ? 'justify-center' : ''}`}
           >
-            <div className="w-7 h-7 rounded-full bg-[#E63946] text-white text-[11px] font-bold flex items-center justify-center shrink-0">
+            <div
+              className="w-7 h-7 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 ring-2"
+              style={{ backgroundColor: avatarColor, '--tw-ring-color': avatarColor + '40' } as React.CSSProperties}
+            >
               {initials}
             </div>
             {!collapsed && (
               <div className="min-w-0 text-left">
-                <div className="text-white text-[12px] font-medium truncate">{user.name}</div>
-                <div className="text-[#555] text-[10px] capitalize truncate">{user.role.replace('_', ' ')}</div>
+                <div className="text-text-primary text-xs font-medium truncate">{user.name}</div>
+                <div className="text-text-muted text-[10px] capitalize truncate">{user.role.replace('_', ' ')}</div>
               </div>
             )}
           </button>
 
           {showUserMenu && (
-            <div className={`absolute ${collapsed ? 'left-full ml-2 bottom-0' : 'bottom-full mb-1 left-0 right-0'} bg-[#1A1A1A] border border-[#2A2A2A] rounded-lg shadow-xl overflow-hidden z-50 w-40`}>
+            <div className={`absolute ${collapsed ? 'left-full ml-2 bottom-0' : 'bottom-full mb-1 left-0 right-0'} bg-surface-3 ring-1 ring-surface-5 rounded-lg shadow-panel overflow-hidden z-50 w-40 animate-slide-in-up`}>
+              <div className="px-4 py-2.5 border-b border-surface-5">
+                <div className="text-text-primary text-xs font-medium truncate">{user.name}</div>
+                <div className="text-text-muted text-[10px] truncate">{user.email}</div>
+              </div>
               <button onClick={onLogout}
-                className="w-full px-4 py-2.5 text-left text-[12px] text-[#E63946] hover:bg-[#222] transition-colors">
+                className="w-full px-4 py-2.5 text-left text-xs text-brand hover:bg-surface-4 transition-colors flex items-center gap-2">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+                </svg>
                 Sign out
               </button>
             </div>
@@ -390,11 +549,11 @@ function Sidebar({ user, collapsed, onToggle, onLogout }: SidebarProps) {
         <button
           onClick={onToggle}
           style={{ width: 'calc(100% - 16px)' }}
-          className={`flex items-center gap-3 px-2.5 py-2 mx-2 rounded-lg text-[#555] hover:text-white hover:bg-[#1A1A1A] transition-colors ${collapsed ? 'justify-center' : ''}`}
+          className={`flex items-center gap-3 px-2.5 py-2 mx-2 mt-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-4 transition-colors ${collapsed ? 'justify-center' : ''}`}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           <span className="shrink-0">{collapsed ? Icons.chevronRight : Icons.chevronLeft}</span>
-          {!collapsed && <span className="text-[12px]">Collapse</span>}
+          {!collapsed && <span className="text-xs">Collapse</span>}
         </button>
       </div>
     </aside>
@@ -407,20 +566,71 @@ interface TopBarProps {
   myStatus: AgentStatus;
   activeChats: number;
   onStatusChange: (s: AgentStatus) => void;
+  onSearchOpen: () => void;
 }
 
-function TopBar({ myStatus, activeChats, onStatusChange }: TopBarProps) {
+function TopBar({ myStatus, activeChats, onStatusChange, onSearchOpen }: TopBarProps) {
   const location = useLocation();
-  const title = PAGE_TITLES[location.pathname] ?? 'Dashboard';
+  const title = PAGE_TITLES[location.pathname] ?? 'Help Desk';
 
   return (
-    <div className="h-12 bg-white border-b border-[#E5E5E5] flex items-center justify-between px-5 shrink-0">
-      <h1 className="text-[15px] font-semibold text-[#111]">{title}</h1>
-      <div className="flex items-center gap-3">
-        <button className="text-[#999] hover:text-[#111] transition-colors" title="Notifications">
+    <div className="h-12 bg-surface-2 border-b border-surface-5 flex items-center justify-between px-5 shrink-0">
+      <h1 className="text-md font-semibold text-text-primary">{title}</h1>
+      <div className="flex items-center gap-2">
+        {/* Cmd+K search trigger */}
+        <button
+          onClick={onSearchOpen}
+          className="flex items-center gap-2 h-8 px-3 rounded-md ring-1 ring-surface-5 bg-surface-3 hover:bg-surface-4 transition-colors text-text-muted text-xs"
+          title="Search (⌘K)"
+        >
+          {Icons.search}
+          <span className="hidden sm:block">Search</span>
+          <kbd className="hidden sm:block text-[10px] bg-surface-4 px-1.5 py-0.5 rounded text-text-muted font-mono ml-1">⌘K</kbd>
+        </button>
+        <button className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-4 transition-colors relative" title="Notifications">
           {Icons.bell}
+          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-brand" />
         </button>
         <AgentStateToggle status={myStatus} activeChats={activeChats} onChange={onStatusChange} />
+      </div>
+    </div>
+  );
+}
+
+// ── Global Search Modal ───────────────────────────────────────────────────────
+
+function SearchModal({ onClose }: { onClose: () => void }) {
+  const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center pt-24 animate-fade-in" onClick={onClose}>
+      <div
+        className="w-full max-w-lg bg-surface-3 ring-1 ring-surface-5 rounded-xl shadow-modal overflow-hidden animate-scale-in"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-surface-5">
+          {Icons.search}
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search tickets, customers, or IDs…"
+            className="flex-1 bg-transparent text-text-primary text-sm outline-none placeholder:text-text-muted"
+          />
+          <kbd className="text-[10px] text-text-muted bg-surface-4 px-2 py-1 rounded font-mono">ESC</kbd>
+        </div>
+        <div className="p-4 text-text-muted text-xs text-center">
+          {query ? `Searching for "${query}"…` : 'Start typing to search conversations, customers, or ticket IDs.'}
+        </div>
       </div>
     </div>
   );
@@ -461,9 +671,17 @@ function Workspace({ ws, tickets, selectedId, view, search, onSelect, onViewChan
               pendingDraft={pendingDraft}
               onDraftConsumed={() => setPendingDraft(null)}
             />
-          : <div className="flex items-center justify-center h-full text-[#999] text-sm bg-[#F8F8F8]">
-              Select a conversation
+          : (
+            <div className="flex flex-col items-center justify-center h-full bg-surface-0 gap-4">
+              <div className="w-12 h-12 rounded-full bg-surface-3 ring-1 ring-surface-5 flex items-center justify-center">
+                {Icons.inbox}
+              </div>
+              <div className="text-center">
+                <p className="text-text-primary text-sm font-medium">Select a conversation</p>
+                <p className="text-text-muted text-xs mt-1">Choose a ticket from the list to start</p>
+              </div>
             </div>
+          )
         }
       </div>
       {selectedTicket && (
@@ -482,13 +700,30 @@ function Workspace({ ws, tickets, selectedId, view, search, onSelect, onViewChan
 export default function App() {
   const [user, setUser] = useState<AuthUser | null>(getAuthUser);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar_collapsed') === 'true');
+  const [theme, setTheme] = useState<'dark' | 'light'>(getTheme);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() => sessionStorage.getItem('selectedId'));
   const [view, setView] = useState<InboxView>(() => (sessionStorage.getItem('inboxView') as InboxView) ?? 'all_open');
   const [search, setSearch] = useState(() => sessionStorage.getItem('inboxSearch') ?? '');
   const [myStatus, setMyStatus] = useState<AgentStatus>('Available');
   const [activeChats, setActiveChats] = useState(0);
+  const [searchOpen, setSearchOpen] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Apply theme on mount and change
+  useEffect(() => { applyTheme(theme); }, [theme]);
+
+  // Cmd+K global shortcut
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
 
   const loadTickets = async () => {
     try {
@@ -531,6 +766,10 @@ export default function App() {
     });
   };
 
+  const handleThemeToggle = () => {
+    setTheme(t => t === 'dark' ? 'light' : 'dark');
+  };
+
   const handleSelect = (id: string) => { sessionStorage.setItem('selectedId', id); setSelectedId(id); };
   const handleViewChange = (v: InboxView) => { sessionStorage.setItem('inboxView', v); setView(v); };
   const handleSearchChange = (s: string) => { sessionStorage.setItem('inboxSearch', s); setSearch(s); };
@@ -547,57 +786,69 @@ export default function App() {
 
   return (
     <PermissionProvider value={user.permissions ?? []}>
-    <div className="flex h-screen bg-[#F8F8F8] font-sans overflow-hidden">
-      {/* ── Sidebar ── */}
-      <Sidebar user={user} collapsed={collapsed} onToggle={handleToggleSidebar} onLogout={handleLogout} />
+      <div className="flex h-screen bg-surface-0 overflow-hidden">
+        {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
 
-      {/* ── Main ── */}
-      <div className="flex flex-col flex-1 overflow-hidden">
-        <TopBar myStatus={myStatus} activeChats={activeChats} onStatusChange={handleStatusChange} />
+        <Sidebar
+          user={user}
+          collapsed={collapsed}
+          onToggle={handleToggleSidebar}
+          onLogout={handleLogout}
+          theme={theme}
+          onThemeToggle={handleThemeToggle}
+        />
 
-        <div className="flex flex-1 overflow-hidden">
-          <Routes>
-            <Route path="/" element={
-              <HomeDashboard onSelectTicket={handleSelect} />
-            } />
-            <Route path="/inbox" element={
-              <Workspace
-                ws={wsRef.current}
-                tickets={tickets} selectedId={selectedId} view={view} search={search}
-                onSelect={handleSelect} onViewChange={handleViewChange}
-                onSearchChange={handleSearchChange} onRefresh={loadTickets}
-              />
-            } />
-            <Route path="/supervisor" element={
-              <PermissionGuard permission="section.supervisor" user={user}>
-                <SupervisorDashboard />
-              </PermissionGuard>
-            } />
-            <Route path="/analytics" element={
-              <PermissionGuard permission="section.analytics" user={user}>
-                <AnalyticsDashboard />
-              </PermissionGuard>
-            } />
-            <Route path="/admin" element={
-              <PermissionGuard permission="section.admin" user={user}>
-                <AdminSettings currentUser={user} />
-              </PermissionGuard>
-            } />
-            <Route path="/studio" element={
-              <PermissionGuard permission="section.studio" user={user}>
-                <AIStudio />
-              </PermissionGuard>
-            } />
-            <Route path="/metrics" element={
-              <PermissionGuard permission="section.metrics" user={user}>
-                <MetricsDashboard />
-              </PermissionGuard>
-            } />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <TopBar
+            myStatus={myStatus}
+            activeChats={activeChats}
+            onStatusChange={handleStatusChange}
+            onSearchOpen={() => setSearchOpen(true)}
+          />
+
+          <div className="flex flex-1 overflow-hidden">
+            <Routes>
+              <Route path="/" element={
+                <HomeDashboard onSelectTicket={handleSelect} />
+              } />
+              <Route path="/inbox" element={
+                <Workspace
+                  ws={wsRef.current}
+                  tickets={tickets} selectedId={selectedId} view={view} search={search}
+                  onSelect={handleSelect} onViewChange={handleViewChange}
+                  onSearchChange={handleSearchChange} onRefresh={loadTickets}
+                />
+              } />
+              <Route path="/supervisor" element={
+                <PermissionGuard permission="section.supervisor" user={user}>
+                  <SupervisorDashboard />
+                </PermissionGuard>
+              } />
+              <Route path="/analytics" element={
+                <PermissionGuard permission="section.analytics" user={user}>
+                  <AnalyticsDashboard />
+                </PermissionGuard>
+              } />
+              <Route path="/admin" element={
+                <PermissionGuard permission="section.admin" user={user}>
+                  <AdminSettings currentUser={user} />
+                </PermissionGuard>
+              } />
+              <Route path="/studio" element={
+                <PermissionGuard permission="section.studio" user={user}>
+                  <AIStudio />
+                </PermissionGuard>
+              } />
+              <Route path="/metrics" element={
+                <PermissionGuard permission="section.metrics" user={user}>
+                  <MetricsDashboard />
+                </PermissionGuard>
+              } />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </div>
         </div>
       </div>
-    </div>
     </PermissionProvider>
   );
 }

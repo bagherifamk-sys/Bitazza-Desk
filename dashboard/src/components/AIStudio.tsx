@@ -19,6 +19,7 @@ import ReactFlow, {
   type Node,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { Spinner } from './ui/Spinner';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -27,22 +28,17 @@ type NodeKind = 'message' | 'condition' | 'api_call' | 'handoff';
 interface NodeData {
   kind: NodeKind;
   label: string;
-  // message
   text?: string;
-  // condition
   variable?: string;
   operator?: string;
   value?: string;
-  // api_call
   endpoint?: string;
   method?: string;
-  // handoff
   team?: string;
-  // validation error
   error?: boolean;
 }
 
-// ── Node style helpers ────────────────────────────────────────────────────────
+// ── Node style config ─────────────────────────────────────────────────────────
 
 const KIND_LABEL: Record<NodeKind, string> = {
   message:   'Message',
@@ -51,33 +47,65 @@ const KIND_LABEL: Record<NodeKind, string> = {
   handoff:   'Handoff',
 };
 
-const KIND_BORDER: Record<NodeKind, string> = {
-  message:   'border-[#000]',
-  condition: 'border-[#333]',
-  api_call:  'border-[#666]',
-  handoff:   'border-[#000]',
+const KIND_ACCENT: Record<NodeKind, string> = {
+  message:   '#3B82F6',
+  condition: '#F59E0B',
+  api_call:  '#8B5CF6',
+  handoff:   '#22C55E',
+};
+
+const KIND_ICON: Record<NodeKind, string> = {
+  message:   'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
+  condition: 'M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
+  api_call:  'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4',
+  handoff:   'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z',
 };
 
 // ── Custom nodes ──────────────────────────────────────────────────────────────
 
 function BaseNode({ data, children, selected }: NodeProps<NodeData> & { children: React.ReactNode }) {
+  const accent = data.error ? '#E63946' : KIND_ACCENT[data.kind];
   return (
-    <div className={`bg-white border-2 ${data.error ? 'border-[#D32F2F]' : KIND_BORDER[data.kind]} rounded min-w-[160px] shadow-sm ${selected ? 'ring-2 ring-offset-1 ring-[#000]' : ''}`}>
-      <div className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider border-b ${data.error ? 'border-[#D32F2F] text-[#D32F2F]' : 'border-[#EAEAEA] text-[#333]'}`}>
-        {KIND_LABEL[data.kind]}
-        {data.error && <span className="ml-1 text-[#D32F2F]">!</span>}
+    <div
+      className={`bg-surface-3 rounded-lg min-w-[180px] shadow-panel transition-shadow ${
+        selected ? 'ring-2 ring-brand shadow-modal' : 'ring-1 ring-surface-5'
+      } ${data.error ? 'ring-brand/50' : ''}`}
+    >
+      {/* Node header with accent left border */}
+      <div
+        className="flex items-center gap-2 px-3 py-2 border-b border-surface-5 rounded-t-lg"
+        style={{ borderLeft: `3px solid ${accent}` }}
+      >
+        <svg className="w-3.5 h-3.5 shrink-0" style={{ color: accent }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={KIND_ICON[data.kind]} />
+        </svg>
+        <span className="text-[10px] font-bold uppercase tracking-wider text-text-secondary">
+          {KIND_LABEL[data.kind]}
+        </span>
+        {data.error && (
+          <span className="ml-auto text-brand text-[10px] font-bold">!</span>
+        )}
       </div>
-      <div className="px-3 py-2 text-xs text-[#000]">{children}</div>
+      <div className="px-3 py-2.5 text-xs text-text-primary">{children}</div>
     </div>
   );
 }
 
+const handleStyle = (color: string) => ({
+  width: 10,
+  height: 10,
+  background: color,
+  border: '2px solid var(--surface-3)',
+});
+
 function MessageNode(props: NodeProps<NodeData>) {
   return (
     <BaseNode {...props}>
-      <Handle type="target" position={Position.Top} style={{ background: '#000' }} />
-      <p className="truncate max-w-[140px]">{props.data.text || <span className="text-[#999]">Enter message…</span>}</p>
-      <Handle type="source" position={Position.Bottom} style={{ background: '#000' }} />
+      <Handle type="target" position={Position.Top} style={handleStyle(KIND_ACCENT.message)} />
+      <p className="truncate max-w-[150px] text-text-secondary">
+        {props.data.text || <span className="text-text-muted italic">Enter message…</span>}
+      </p>
+      <Handle type="source" position={Position.Bottom} style={handleStyle(KIND_ACCENT.message)} />
     </BaseNode>
   );
 }
@@ -85,15 +113,20 @@ function MessageNode(props: NodeProps<NodeData>) {
 function ConditionNode(props: NodeProps<NodeData>) {
   return (
     <BaseNode {...props}>
-      <Handle type="target" position={Position.Top} style={{ background: '#000' }} />
-      <p className="truncate max-w-[140px] font-mono text-[11px]">
-        {props.data.variable || 'var'} {props.data.operator || '=='} {props.data.value || 'val'}
+      <Handle type="target" position={Position.Top} style={handleStyle(KIND_ACCENT.condition)} />
+      <p className="truncate max-w-[150px] font-mono text-[11px] text-text-secondary">
+        {props.data.variable || 'var'}{' '}
+        <span className="text-accent-amber">{props.data.operator || '=='}</span>{' '}
+        {props.data.value || 'val'}
       </p>
-      <div className="flex justify-between mt-1 text-[9px] text-[#999]">
-        <span>True ↓</span><span>False ↓</span>
+      <div className="flex justify-between mt-2 text-[9px] text-text-muted">
+        <span className="text-accent-green font-medium">True ↓</span>
+        <span className="text-brand font-medium">False ↓</span>
       </div>
-      <Handle type="source" position={Position.Bottom} id="true"  style={{ background: '#2E7D32', left: '30%' }} />
-      <Handle type="source" position={Position.Bottom} id="false" style={{ background: '#D32F2F', left: '70%' }} />
+      <Handle type="source" position={Position.Bottom} id="true"
+        style={{ ...handleStyle('#22C55E'), left: '30%' }} />
+      <Handle type="source" position={Position.Bottom} id="false"
+        style={{ ...handleStyle('#E63946'), left: '70%' }} />
     </BaseNode>
   );
 }
@@ -101,12 +134,12 @@ function ConditionNode(props: NodeProps<NodeData>) {
 function ApiCallNode(props: NodeProps<NodeData>) {
   return (
     <BaseNode {...props}>
-      <Handle type="target" position={Position.Top} style={{ background: '#000' }} />
-      <p className="truncate max-w-[140px] font-mono text-[11px]">
-        <span className="font-bold">{props.data.method || 'GET'}</span>{' '}
-        {props.data.endpoint || '/endpoint'}
+      <Handle type="target" position={Position.Top} style={handleStyle(KIND_ACCENT.api_call)} />
+      <p className="truncate max-w-[150px] font-mono text-[11px]">
+        <span className="text-accent-amber font-bold">{props.data.method || 'GET'}</span>{' '}
+        <span className="text-text-secondary">{props.data.endpoint || '/endpoint'}</span>
       </p>
-      <Handle type="source" position={Position.Bottom} style={{ background: '#000' }} />
+      <Handle type="source" position={Position.Bottom} style={handleStyle(KIND_ACCENT.api_call)} />
     </BaseNode>
   );
 }
@@ -114,9 +147,9 @@ function ApiCallNode(props: NodeProps<NodeData>) {
 function HandoffNode(props: NodeProps<NodeData>) {
   return (
     <BaseNode {...props}>
-      <Handle type="target" position={Position.Top} style={{ background: '#000' }} />
-      <p className="text-xs font-semibold">→ {props.data.team || 'CS Team'}</p>
-      <p className="text-[10px] text-[#999] mt-0.5">Hand off to human agent</p>
+      <Handle type="target" position={Position.Top} style={handleStyle(KIND_ACCENT.handoff)} />
+      <p className="text-xs font-semibold text-accent-green">→ {props.data.team || 'CS Team'}</p>
+      <p className="text-[10px] text-text-muted mt-0.5">Hand off to human agent</p>
     </BaseNode>
   );
 }
@@ -138,41 +171,59 @@ interface SidebarProps {
 
 function NodeSidebar({ node, onChange, onDelete }: SidebarProps) {
   if (!node) return (
-    <div className="w-[260px] shrink-0 border-l border-[#EAEAEA] p-4 flex items-center justify-center">
-      <p className="text-xs text-[#999] text-center">Select a node to configure it</p>
+    <div className="w-[260px] shrink-0 border-l border-surface-5 bg-surface-1 flex items-center justify-center">
+      <div className="text-center px-6">
+        <svg className="w-8 h-8 text-text-muted mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5"/>
+        </svg>
+        <p className="text-xs text-text-muted">Select a node to configure it</p>
+      </div>
     </div>
   );
 
   const d = node.data;
+  const accent = KIND_ACCENT[d.kind];
+
   const field = (label: string, key: keyof NodeData, placeholder = '') => (
     <div className="mb-3">
-      <label className="text-[10px] text-[#999] uppercase tracking-wide block mb-1">{label}</label>
+      <label className="text-[10px] text-text-muted uppercase tracking-wide block mb-1.5">{label}</label>
       <input
         value={(d[key] as string) ?? ''}
         onChange={e => onChange(node.id, { [key]: e.target.value })}
         placeholder={placeholder}
-        className="w-full text-xs border border-[#CCC] px-2 py-1.5 outline-none focus:border-[#000] transition-colors"
+        className="w-full text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary placeholder:text-text-muted outline-none focus:ring-brand transition-all"
       />
     </div>
   );
 
   return (
-    <div className="w-[260px] shrink-0 border-l border-[#EAEAEA] flex flex-col overflow-y-auto">
-      <div className="px-4 py-3 border-b border-[#EAEAEA] flex items-center justify-between">
-        <span className="text-xs font-bold text-[#000] uppercase tracking-wide">{KIND_LABEL[d.kind]}</span>
-        <button onClick={() => onDelete(node.id)} className="text-[10px] text-[#999] hover:text-[#D32F2F] transition-colors">Delete</button>
+    <div className="w-[260px] shrink-0 border-l border-surface-5 bg-surface-1 flex flex-col overflow-y-auto">
+      <div className="px-4 py-3 border-b border-surface-5 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full" style={{ background: accent }} />
+          <span className="text-xs font-semibold text-text-primary">{KIND_LABEL[d.kind]}</span>
+        </div>
+        {node.id !== 'start' && (
+          <button
+            onClick={() => onDelete(node.id)}
+            className="text-[10px] text-text-muted hover:text-brand transition-colors"
+          >
+            Delete
+          </button>
+        )}
       </div>
-      <div className="px-4 py-3">
+
+      <div className="px-4 py-3 space-y-1">
         {field('Label', 'label', 'Node label')}
 
         {d.kind === 'message' && (
           <div className="mb-3">
-            <label className="text-[10px] text-[#999] uppercase tracking-wide block mb-1">Message text</label>
+            <label className="text-[10px] text-text-muted uppercase tracking-wide block mb-1.5">Message text</label>
             <textarea
               value={d.text ?? ''}
               onChange={e => onChange(node.id, { text: e.target.value })}
               placeholder="Bot sends this message…"
-              className="w-full text-xs border border-[#CCC] px-2 py-1.5 outline-none focus:border-[#000] resize-none transition-colors"
+              className="w-full text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary placeholder:text-text-muted outline-none focus:ring-brand resize-none transition-all"
               rows={4}
             />
           </div>
@@ -182,11 +233,11 @@ function NodeSidebar({ node, onChange, onDelete }: SidebarProps) {
           <>
             {field('Variable', 'variable', 'e.g. intent')}
             <div className="mb-3">
-              <label className="text-[10px] text-[#999] uppercase tracking-wide block mb-1">Operator</label>
+              <label className="text-[10px] text-text-muted uppercase tracking-wide block mb-1.5">Operator</label>
               <select
                 value={d.operator ?? '=='}
                 onChange={e => onChange(node.id, { operator: e.target.value })}
-                className="w-full text-xs border border-[#CCC] px-2 py-1.5 outline-none focus:border-[#000]"
+                className="w-full text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary outline-none focus:ring-brand transition-all"
               >
                 {['==', '!=', 'contains', 'starts_with', '>', '<'].map(op => (
                   <option key={op} value={op}>{op}</option>
@@ -200,11 +251,11 @@ function NodeSidebar({ node, onChange, onDelete }: SidebarProps) {
         {d.kind === 'api_call' && (
           <>
             <div className="mb-3">
-              <label className="text-[10px] text-[#999] uppercase tracking-wide block mb-1">Method</label>
+              <label className="text-[10px] text-text-muted uppercase tracking-wide block mb-1.5">Method</label>
               <select
                 value={d.method ?? 'GET'}
                 onChange={e => onChange(node.id, { method: e.target.value })}
-                className="w-full text-xs border border-[#CCC] px-2 py-1.5 outline-none focus:border-[#000]"
+                className="w-full text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary outline-none focus:ring-brand transition-all"
               >
                 {['GET', 'POST', 'PATCH'].map(m => <option key={m} value={m}>{m}</option>)}
               </select>
@@ -215,13 +266,15 @@ function NodeSidebar({ node, onChange, onDelete }: SidebarProps) {
 
         {d.kind === 'handoff' && (
           <div className="mb-3">
-            <label className="text-[10px] text-[#999] uppercase tracking-wide block mb-1">Target team</label>
+            <label className="text-[10px] text-text-muted uppercase tracking-wide block mb-1.5">Target team</label>
             <select
               value={d.team ?? 'cs'}
               onChange={e => onChange(node.id, { team: e.target.value })}
-              className="w-full text-xs border border-[#CCC] px-2 py-1.5 outline-none focus:border-[#000]"
+              className="w-full text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary outline-none focus:ring-brand transition-all"
             >
-              {['cs', 'kyc', 'finance', 'tech'].map(t => <option key={t} value={t}>{t.toUpperCase()}</option>)}
+              {['cs', 'kyc', 'finance', 'tech'].map(t => (
+                <option key={t} value={t}>{t.toUpperCase()}</option>
+              ))}
             </select>
           </div>
         )}
@@ -246,15 +299,12 @@ function validate(nodes: Node<NodeData>[], edges: Edge[]): ValidationError[] {
 
   for (const node of nodes) {
     const k = node.data.kind;
-    // Every non-start node must have an incoming edge
     if (!connectedTargets.has(node.id) && node.id !== 'start') {
       errors.push({ nodeId: node.id, message: `"${node.data.label || k}" has no incoming connection.` });
     }
-    // Non-handoff nodes must have outgoing edges
     if (k !== 'handoff' && !connectedSources.has(node.id)) {
       errors.push({ nodeId: node.id, message: `"${node.data.label || k}" is a dead end. Connect it to proceed.` });
     }
-    // Condition nodes need both true/false branches
     if (k === 'condition') {
       const outEdges = edges.filter(e => e.source === node.id);
       const hasTrue  = outEdges.some(e => e.sourceHandle === 'true');
@@ -264,11 +314,10 @@ function validate(nodes: Node<NodeData>[], edges: Edge[]): ValidationError[] {
       }
     }
   }
-
   return errors;
 }
 
-// ── Initial nodes (Start node always present) ─────────────────────────────────
+// ── Initial nodes ─────────────────────────────────────────────────────────────
 
 const INITIAL_NODES: Node<NodeData>[] = [
   {
@@ -298,7 +347,11 @@ export default function AIStudio() {
   const flowIdRef = useRef<string | null>(null);
 
   const onConnect = useCallback(
-    (params: Connection) => setEdges(eds => addEdge({ ...params, style: { stroke: '#000' } }, eds)),
+    (params: Connection) => setEdges(eds => addEdge({
+      ...params,
+      style: { stroke: 'var(--surface-5)', strokeWidth: 2 },
+      animated: false,
+    }, eds)),
     [setEdges]
   );
 
@@ -325,19 +378,17 @@ export default function AIStudio() {
   }, [setNodes]);
 
   const deleteNode = useCallback((id: string) => {
-    if (id === 'start') return; // can't delete start
+    if (id === 'start') return;
     setNodes(ns => ns.filter(n => n.id !== id));
     setEdges(es => es.filter(e => e.source !== id && e.target !== id));
     setSelectedNode(null);
   }, [setNodes, setEdges]);
 
-  // Clear validation error highlights
   const clearErrors = () => {
     setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, error: false } })));
     setValidationErrors([]);
   };
 
-  // Save draft
   const saveDraft = async () => {
     setStatus('saving'); clearErrors();
     const flow_json = { nodes, edges };
@@ -361,12 +412,10 @@ export default function AIStudio() {
     }
   };
 
-  // Publish (FR-16) — validate first
   const publish = async () => {
     clearErrors();
     const errors = validate(nodes, edges);
     if (errors.length) {
-      // Highlight broken nodes in red
       const errorIds = new Set(errors.map(e => e.nodeId).filter(Boolean));
       setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, error: errorIds.has(n.id) } })));
       setValidationErrors(errors);
@@ -376,7 +425,6 @@ export default function AIStudio() {
     }
 
     if (!flowIdRef.current) {
-      // Auto-save first
       await saveDraft();
       if (!flowIdRef.current) return;
     }
@@ -389,7 +437,6 @@ export default function AIStudio() {
       });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
-        // Highlight broken nodes returned by server
         if (body.broken_node_ids?.length) {
           const ids = new Set(body.broken_node_ids as string[]);
           setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, error: ids.has(n.id) } })));
@@ -403,72 +450,96 @@ export default function AIStudio() {
     }
   };
 
-  return (
-    <div className="flex flex-1 overflow-hidden bg-white">
+  const isBusy = status === 'saving' || status === 'publishing';
 
-      {/* ── Left toolbar ────────────────────────────────────────────── */}
-      <div className="w-[180px] shrink-0 border-r border-[#EAEAEA] flex flex-col">
-        <div className="px-3 py-3 border-b border-[#EAEAEA]">
-          <p className="text-[10px] text-[#999] uppercase tracking-wide mb-2">Flow name</p>
+  return (
+    <div className="flex flex-1 overflow-hidden bg-surface-0">
+
+      {/* ── Left toolbar ─────────────────────────────────────────────── */}
+      <div className="w-[200px] shrink-0 border-r border-surface-5 bg-surface-1 flex flex-col">
+
+        {/* Flow name */}
+        <div className="px-3 py-3 border-b border-surface-5">
+          <p className="text-[10px] text-text-muted uppercase tracking-wide mb-1.5">Flow name</p>
           <input
             value={flowName}
             onChange={e => setFlowName(e.target.value)}
-            className="w-full text-xs border border-[#CCC] px-2 py-1.5 outline-none focus:border-[#000] transition-colors"
+            className="w-full text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary outline-none focus:ring-brand transition-all"
           />
         </div>
 
-        <div className="px-3 py-3 border-b border-[#EAEAEA]">
-          <p className="text-[10px] text-[#999] uppercase tracking-wide mb-2">Add node</p>
+        {/* Add nodes */}
+        <div className="px-3 py-3 border-b border-surface-5">
+          <p className="text-[10px] text-text-muted uppercase tracking-wide mb-2">Add node</p>
           <div className="space-y-1.5">
             {(['message', 'condition', 'api_call', 'handoff'] as NodeKind[]).map(k => (
               <button
                 key={k}
                 onClick={() => addNode(k)}
-                className="w-full text-left text-xs border border-[#CCC] px-2 py-1.5 hover:border-[#000] hover:bg-[#fafafa] transition-colors"
+                className="w-full text-left text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-2 hover:bg-surface-3 hover:ring-surface-4 transition-colors flex items-center gap-2 text-text-secondary hover:text-text-primary"
               >
-                + {KIND_LABEL[k]}
+                <div className="w-2 h-2 rounded-full shrink-0" style={{ background: KIND_ACCENT[k] }} />
+                {KIND_LABEL[k]}
               </button>
             ))}
           </div>
         </div>
 
-        <div className="px-3 py-3 space-y-2 mt-auto border-t border-[#EAEAEA]">
+        {/* Actions */}
+        <div className="px-3 py-3 space-y-2 mt-auto border-t border-surface-5">
           <button
             onClick={saveDraft}
-            disabled={status === 'saving' || status === 'publishing'}
-            className="w-full text-xs border border-[#CCC] px-2 py-1.5 hover:border-[#000] transition-colors disabled:opacity-40"
+            disabled={isBusy}
+            className="w-full text-xs bg-surface-3 ring-1 ring-surface-5 rounded px-3 py-2 hover:bg-surface-4 transition-colors disabled:opacity-40 text-text-secondary hover:text-text-primary flex items-center justify-center gap-1.5"
           >
-            {status === 'saving' ? 'Saving…' : 'Save Draft'}
+            {status === 'saving' ? <><Spinner size="xs" /> Saving…</> : 'Save Draft'}
           </button>
           <button
             onClick={publish}
-            disabled={status === 'saving' || status === 'publishing'}
-            className="w-full text-xs bg-[#000] text-white px-2 py-1.5 hover:bg-[#333] transition-colors disabled:opacity-40"
+            disabled={isBusy}
+            className="w-full text-xs bg-brand hover:bg-brand-dim text-white rounded px-3 py-2 transition-colors disabled:opacity-40 flex items-center justify-center gap-1.5"
           >
-            {status === 'publishing' ? 'Publishing…' : 'Publish'}
+            {status === 'publishing' ? <><Spinner size="xs" /> Publishing…</> : 'Publish Flow'}
           </button>
 
-          {/* Status message */}
+          {/* Status indicator */}
           {status !== 'idle' && statusMsg && (
-            <p className={`text-[10px] leading-snug ${status === 'error' ? 'text-[#D32F2F]' : status === 'ok' ? 'text-[#2E7D32]' : 'text-[#999]'}`}>
+            <div className={`flex items-center gap-1.5 text-[10px] leading-snug px-1 ${
+              status === 'error' ? 'text-brand' :
+              status === 'ok'    ? 'text-accent-green' :
+              'text-text-muted'
+            }`}>
+              {status === 'ok' && (
+                <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7"/>
+                </svg>
+              )}
               {statusMsg}
-            </p>
+            </div>
           )}
         </div>
       </div>
 
-      {/* ── Canvas ──────────────────────────────────────────────────── */}
+      {/* ── Canvas ───────────────────────────────────────────────────── */}
       <div className="flex-1 relative">
+
         {/* Validation error banner */}
         {validationErrors.length > 0 && (
-          <div className="absolute top-0 left-0 right-0 z-10 bg-[#ffebee] border-b border-[#D32F2F] px-4 py-2">
+          <div className="absolute top-0 left-0 right-0 z-10 bg-brand/10 border-b border-brand/30 px-4 py-2.5 animate-slide-in-up">
             <div className="flex items-start justify-between gap-2">
-              <div>
+              <div className="space-y-0.5">
                 {validationErrors.map((e, i) => (
-                  <p key={i} className="text-xs text-[#D32F2F]">• {e.message}</p>
+                  <p key={i} className="text-xs text-brand">• {e.message}</p>
                 ))}
               </div>
-              <button onClick={clearErrors} className="text-[#D32F2F] text-xs shrink-0">✕</button>
+              <button
+                onClick={clearErrors}
+                className="text-brand hover:text-brand-dim text-xs shrink-0 p-1 hover:bg-brand/10 rounded transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
             </div>
           </div>
         )}
@@ -483,21 +554,34 @@ export default function AIStudio() {
           onPaneClick={onPaneClick}
           nodeTypes={NODE_TYPES}
           fitView
-          style={{ background: '#fff' }}
-          defaultEdgeOptions={{ style: { stroke: '#000', strokeWidth: 1.5 }, animated: false }}
+          style={{ background: 'var(--surface-0)' }}
+          defaultEdgeOptions={{
+            style: { stroke: 'var(--surface-5)', strokeWidth: 2 },
+            animated: false,
+          }}
         >
-          <Background color="#f0f0f0" gap={16} />
-          <Controls style={{ border: '1px solid #EAEAEA', borderRadius: 0 }} />
+          <Background color="var(--surface-5)" gap={20} size={1} />
+          <Controls
+            style={{
+              background: 'var(--surface-2)',
+              border: '1px solid var(--surface-5)',
+              borderRadius: 8,
+            }}
+          />
           <MiniMap
-            nodeStrokeColor="#000"
-            nodeColor="#fff"
-            maskColor="rgba(0,0,0,0.05)"
-            style={{ border: '1px solid #EAEAEA', borderRadius: 0 }}
+            nodeStrokeColor="var(--surface-5)"
+            nodeColor="var(--surface-3)"
+            maskColor="rgba(8,10,12,0.6)"
+            style={{
+              background: 'var(--surface-2)',
+              border: '1px solid var(--surface-5)',
+              borderRadius: 8,
+            }}
           />
         </ReactFlow>
       </div>
 
-      {/* ── Right sidebar — node config ──────────────────────────────── */}
+      {/* ── Right sidebar — node config ───────────────────────────────── */}
       <NodeSidebar
         node={selectedNode}
         onChange={updateNodeData}

@@ -1,48 +1,57 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { RelatedTicket } from '../types';
 import { api } from '../api';
+import { Spinner } from './ui/Spinner';
+import { Skeleton } from './ui/Skeleton';
 
 interface Props {
   ticketId: string;
-  /** Called when agent clicks Accept on a draft — inserts text into composer */
   onAcceptDraft?: (text: string) => void;
 }
 
-const SENTIMENT_STYLE: Record<string, string> = {
-  positive: 'text-[#2E7D32] border-[#2E7D32]',
-  negative: 'text-[#D32F2F] border-[#D32F2F]',
-  neutral:  'text-[#666]   border-[#CCC]',
+const SENTIMENT_CONFIG: Record<string, { label: string; cls: string }> = {
+  positive: { label: 'Positive', cls: 'bg-accent-green/10 text-accent-green ring-1 ring-accent-green/20' },
+  negative: { label: 'Negative', cls: 'bg-brand/10 text-brand ring-1 ring-brand/20' },
+  neutral:  { label: 'Neutral',  cls: 'bg-surface-4 text-text-secondary ring-1 ring-surface-5' },
 };
 
 export default function CopilotPanel({ ticketId, onAcceptDraft }: Props) {
-  const [open, setOpen] = useState(true);
-
-  // Suggest reply
-  const [suggestion, setSuggestion] = useState('');
+  const [suggestion, setSuggestion]             = useState('');
   const [suggestionLoading, setSuggestionLoading] = useState(false);
-  const [suggestionError, setSuggestionError] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [suggestionError, setSuggestionError]   = useState('');
+  const [copied, setCopied]                     = useState(false);
 
-  // Summary
-  const [summary, setSummary] = useState('');
+  const [summary, setSummary]           = useState('');
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState('');
 
-  // Sentiment
-  const [sentiment, setSentiment] = useState('');
+  const [sentiment, setSentiment]             = useState('');
   const [sentimentLoading, setSentimentLoading] = useState(false);
 
-  // Related tickets
-  const [related, setRelated] = useState<RelatedTicket[]>([]);
+  const [related, setRelated]             = useState<RelatedTicket[]>([]);
   const [relatedLoading, setRelatedLoading] = useState(false);
 
-  // Reset on ticket change
+  const loadSentiment = useCallback(async () => {
+    setSentimentLoading(true);
+    try {
+      const r = await api.sentiment(ticketId);
+      setSentiment(r.sentiment);
+    } catch { /* silent */ } finally { setSentimentLoading(false); }
+  }, [ticketId]);
+
+  const loadRelated = useCallback(async () => {
+    setRelatedLoading(true);
+    try {
+      const r = await api.relatedTickets(ticketId);
+      setRelated(r.related);
+    } catch { /* silent */ } finally { setRelatedLoading(false); }
+  }, [ticketId]);
+
   useEffect(() => {
     setSuggestion(''); setSuggestionError('');
     setSummary('');    setSummaryError('');
     setSentiment('');
     setRelated([]);
-    // Auto-load sentiment + related on open (independent, non-blocking)
     loadSentiment();
     loadRelated();
   }, [ticketId]);
@@ -67,170 +76,189 @@ export default function CopilotPanel({ ticketId, onAcceptDraft }: Props) {
     } finally { setSummaryLoading(false); }
   };
 
-  const loadSentiment = useCallback(async () => {
-    setSentimentLoading(true);
-    try {
-      const r = await api.sentiment(ticketId);
-      setSentiment(r.sentiment);
-    } catch { /* silent */ } finally { setSentimentLoading(false); }
-  }, [ticketId]);
-
-  const loadRelated = useCallback(async () => {
-    setRelatedLoading(true);
-    try {
-      const r = await api.relatedTickets(ticketId);
-      setRelated(r.related);
-    } catch { /* silent */ } finally { setRelatedLoading(false); }
-  }, [ticketId]);
-
   const copySuggestion = () => {
     navigator.clipboard.writeText(suggestion).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
 
+  const sentimentInfo = SENTIMENT_CONFIG[sentiment] ?? SENTIMENT_CONFIG.neutral;
+
   return (
-    <section className="border-t border-[#EAEAEA]">
-      {/* Header */}
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center justify-between w-full px-4 py-3 text-xs font-semibold text-[#333] uppercase tracking-wide hover:bg-[#f5f5f5] transition-colors"
+    <div className="p-4 space-y-5">
+
+      {/* ── Reply Suggestion ─────────────────────────────────────────── */}
+      <CopilotSection
+        title="Reply Suggestion"
+        action={
+          <button
+            onClick={loadSuggestion}
+            disabled={suggestionLoading}
+            className="text-xs text-brand hover:text-brand-dim font-medium disabled:opacity-40 transition-colors flex items-center gap-1"
+          >
+            {suggestionLoading ? <><Spinner size="xs" /> Generating…</> : suggestion ? 'Regenerate' : 'Generate'}
+          </button>
+        }
       >
-        AI Copilot
-        <span className="text-[#999] text-[10px]">{open ? '▲' : '▼'}</span>
-      </button>
-
-      {open && (
-        <div className="px-4 pb-4 space-y-4">
-
-          {/* ── Reply Suggestion ───────────────────────────────────────── */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-semibold text-[#333] uppercase tracking-wide">
-                Reply Suggestion
-              </span>
+        {suggestionError && (
+          <p className="text-xs text-brand">{suggestionError}</p>
+        )}
+        {!suggestion && !suggestionLoading && !suggestionError && (
+          <p className="text-xs text-text-muted italic">Click Generate to get an AI-drafted reply.</p>
+        )}
+        {suggestionLoading && !suggestion && (
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-5/6" />
+            <Skeleton className="h-3 w-4/6" />
+          </div>
+        )}
+        {suggestion && (
+          <div className="bg-brand/5 ring-1 ring-brand/15 rounded-lg p-3">
+            <p className="text-xs text-text-primary whitespace-pre-wrap leading-relaxed">{suggestion}</p>
+            <div className="flex gap-2 mt-3">
+              {onAcceptDraft && (
+                <button
+                  onClick={() => { onAcceptDraft(suggestion); setSuggestion(''); }}
+                  className="text-xs px-3 py-1.5 bg-brand hover:bg-brand-dim text-white rounded transition-colors font-medium"
+                >
+                  Accept
+                </button>
+              )}
               <button
-                onClick={loadSuggestion}
-                disabled={suggestionLoading}
-                className="text-[11px] text-[#000] underline underline-offset-2 disabled:opacity-40"
+                onClick={copySuggestion}
+                className="text-xs px-3 py-1.5 bg-surface-3 ring-1 ring-surface-5 hover:bg-surface-4 text-text-secondary rounded transition-colors"
               >
-                {suggestionLoading ? 'Generating…' : suggestion ? 'Regenerate' : 'Generate'}
+                {copied ? '✓ Copied' : 'Copy'}
+              </button>
+              <button
+                onClick={() => setSuggestion('')}
+                className="text-xs px-3 py-1.5 bg-surface-3 ring-1 ring-surface-5 hover:ring-brand/30 hover:text-brand text-text-muted rounded transition-colors"
+              >
+                Reject
               </button>
             </div>
+          </div>
+        )}
+      </CopilotSection>
 
-            {suggestionError && (
-              <p className="text-[11px] text-[#D32F2F] mb-1">{suggestionError}</p>
-            )}
+      {/* ── Sentiment ────────────────────────────────────────────────── */}
+      <CopilotSection
+        title="Sentiment"
+        action={
+          <button onClick={loadSentiment} className="text-[10px] text-text-muted hover:text-text-primary transition-colors p-0.5">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+            </svg>
+          </button>
+        }
+      >
+        {sentimentLoading
+          ? <Skeleton className="h-5 w-20 rounded-full" />
+          : sentiment
+            ? <span className={`text-xs px-2.5 py-1 rounded-full font-medium capitalize ${sentimentInfo.cls}`}>
+                {sentimentInfo.label}
+              </span>
+            : <span className="text-xs text-text-muted italic">Analyzing…</span>
+        }
+      </CopilotSection>
 
-            {suggestion && (
-              <div className="border border-[#EAEAEA] bg-[#fafafa] p-2.5 text-xs text-[#333] whitespace-pre-wrap leading-relaxed">
-                {suggestion}
-                <div className="flex gap-2 mt-2.5">
-                  {onAcceptDraft && (
-                    <button
-                      onClick={() => { onAcceptDraft(suggestion); setSuggestion(''); }}
-                      className="text-[11px] px-3 py-1 bg-[#000] text-white hover:bg-[#333] transition-colors"
-                    >
-                      Accept
-                    </button>
+      {/* ── Summary ──────────────────────────────────────────────────── */}
+      <CopilotSection
+        title="Summary"
+        action={
+          <button
+            onClick={loadSummary}
+            disabled={summaryLoading}
+            className="text-xs text-brand hover:text-brand-dim font-medium disabled:opacity-40 transition-colors flex items-center gap-1"
+          >
+            {summaryLoading ? <><Spinner size="xs" /> Summarizing…</> : summary ? 'Refresh' : 'Summarize'}
+          </button>
+        }
+      >
+        {summaryError && <p className="text-xs text-brand">{summaryError}</p>}
+        {!summary && !summaryLoading && !summaryError && (
+          <p className="text-xs text-text-muted italic">Click Summarize to get an AI overview.</p>
+        )}
+        {summaryLoading && !summary && (
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-4/5" />
+          </div>
+        )}
+        {summary && (() => {
+          const lines = summary.split('\n').map(l => l.trim()).filter(Boolean);
+          const parsed = lines.map(line => {
+            const colon = line.indexOf(':');
+            if (colon === -1) return { label: '', text: line };
+            return { label: line.slice(0, colon).trim(), text: line.slice(colon + 1).trim() };
+          });
+          return (
+            <div className="bg-accent-amber/5 ring-1 ring-accent-amber/20 rounded-lg divide-y divide-accent-amber/10 text-xs">
+              {parsed.map((row, i) => (
+                <div key={i} className="flex gap-2 px-2.5 py-2 leading-relaxed">
+                  {row.label && (
+                    <span className="shrink-0 font-semibold text-accent-amber w-16 text-[10px] uppercase tracking-wide">
+                      {row.label}
+                    </span>
                   )}
-                  <button
-                    onClick={copySuggestion}
-                    className="text-[11px] px-3 py-1 border border-[#CCC] text-[#333] hover:border-[#000] transition-colors"
-                  >
-                    {copied ? 'Copied!' : 'Copy'}
-                  </button>
-                  <button
-                    onClick={() => setSuggestion('')}
-                    className="text-[11px] px-3 py-1 border border-[#CCC] text-[#666] hover:border-[#D32F2F] hover:text-[#D32F2F] transition-colors"
-                  >
-                    Reject
-                  </button>
+                  <span className="text-text-secondary">{row.text}</span>
                 </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── Summary (FR-10) ────────────────────────────────────────── */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-semibold text-[#333] uppercase tracking-wide">Summary</span>
-              <button
-                onClick={loadSummary}
-                disabled={summaryLoading}
-                className="text-[11px] text-[#000] underline underline-offset-2 disabled:opacity-40"
-              >
-                {summaryLoading ? 'Summarizing…' : summary ? 'Refresh' : 'Summarize'}
-              </button>
+              ))}
             </div>
+          );
+        })()}
+      </CopilotSection>
 
-            {summaryError && (
-              <p className="text-[11px] text-[#D32F2F]">{summaryError}</p>
-            )}
-
-            {summary && (() => {
-              const lines = summary.split('\n').map(l => l.trim()).filter(Boolean);
-              const parsed = lines.map(line => {
-                const colon = line.indexOf(':');
-                if (colon === -1) return { label: '', text: line };
-                return { label: line.slice(0, colon).trim(), text: line.slice(colon + 1).trim() };
-              });
-              return (
-                <div className="border border-[#F9A825]/40 bg-[#FFFDE7] divide-y divide-[#F9A825]/20 text-xs">
-                  {parsed.map((row, i) => (
-                    <div key={i} className="flex gap-2 px-2.5 py-2 leading-relaxed">
-                      {row.label && (
-                        <span className="shrink-0 font-semibold text-[#B45309] w-14">{row.label}</span>
-                      )}
-                      <span className="text-[#333]">{row.text}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
+      {/* ── Related Tickets ──────────────────────────────────────────── */}
+      <CopilotSection title="Related Tickets">
+        {relatedLoading && (
+          <div className="space-y-2">
+            <Skeleton className="h-12 w-full rounded-lg" />
+            <Skeleton className="h-12 w-full rounded-lg" />
           </div>
-
-          {/* ── Sentiment ─────────────────────────────────────────────── */}
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-semibold text-[#333] uppercase tracking-wide">Sentiment</span>
-            {sentimentLoading && <span className="text-[11px] text-[#999]">…</span>}
-            {sentiment && !sentimentLoading && (
-              <span className={`text-[11px] px-2 py-0.5 border rounded-full capitalize ${SENTIMENT_STYLE[sentiment] ?? SENTIMENT_STYLE.neutral}`}>
-                {sentiment}
-              </span>
+        )}
+        {!relatedLoading && related.length === 0 && (
+          <p className="text-xs text-text-muted italic">No related tickets found.</p>
+        )}
+        {!relatedLoading && related.map(t => (
+          <div key={t.id} className="bg-surface-3 ring-1 ring-surface-5 rounded-lg px-3 py-2.5 space-y-0.5">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[10px] text-text-muted">{t.id.slice(0, 8)}…</span>
+              <span className="text-[10px] text-text-muted">{t.status?.replace(/_/g, ' ')}</span>
+            </div>
+            {t.customer_name && (
+              <p className="text-xs font-medium text-text-primary truncate">{t.customer_name}</p>
             )}
-            {!sentimentLoading && (
-              <button onClick={loadSentiment} className="ml-auto text-[11px] text-[#999] hover:text-[#000]">↻</button>
+            {t.last_message && (
+              <p className="text-[10px] text-text-muted truncate">{t.last_message}</p>
             )}
           </div>
+        ))}
+      </CopilotSection>
 
-          {/* ── Related Tickets ────────────────────────────────────────── */}
-          <div>
-            <span className="text-[11px] font-semibold text-[#333] uppercase tracking-wide block mb-2">
-              Related Tickets
-            </span>
-            {relatedLoading && <p className="text-[11px] text-[#999]">Loading…</p>}
-            {!relatedLoading && related.length === 0 && (
-              <p className="text-[11px] text-[#999]">None found</p>
-            )}
-            {!relatedLoading && related.map(t => (
-              <div key={t.id} className="mb-2 p-2 border border-[#EAEAEA] text-xs">
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="font-mono text-[10px] text-[#666]">{t.id.slice(0, 8)}…</span>
-                  <span className="text-[10px] text-[#999]">{t.status?.replace(/_/g, ' ')}</span>
-                </div>
-                {t.customer_name && (
-                  <p className="text-[#333] truncate">{t.customer_name}</p>
-                )}
-                {t.last_message && (
-                  <p className="text-[#999] truncate mt-0.5">{t.last_message}</p>
-                )}
-              </div>
-            ))}
-          </div>
+    </div>
+  );
+}
 
-        </div>
-      )}
-    </section>
+// ── Section wrapper ───────────────────────────────────────────────────────────
+
+function CopilotSection({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">{title}</span>
+        {action}
+      </div>
+      {children}
+    </div>
   );
 }

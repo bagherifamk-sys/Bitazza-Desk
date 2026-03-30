@@ -11,7 +11,9 @@ try:
 except ImportError:
     _CHROMA_AVAILABLE = False
 
-import hashlib, math, re
+import hashlib, logging, math, re
+
+logger = logging.getLogger(__name__)
 from config.settings import CHROMA_PATH
 
 _DIM = 512
@@ -106,4 +108,5 @@ def collection_count(collection_name: str = "knowledge_base") -> int:
     try:
         return get_collection(collection_name).count()
     except Exception:
+        logger.exception("Failed to count collection '%s' — returning 0", collection_name)
         return 0

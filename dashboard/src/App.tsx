@@ -709,6 +709,7 @@ export default function App() {
   const [activeChats, setActiveChats] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const [wsSocket, setWsSocket] = useState<WebSocket | null>(null);
 
   // Apply theme on mount and change
   useEffect(() => { applyTheme(theme); }, [theme]);
@@ -781,8 +782,9 @@ export default function App() {
           return;
         }
       });
-      ws.onclose = () => setTimeout(connect, 3000);
+      ws.onclose = () => { setWsSocket(null); setTimeout(connect, 3000); };
       wsRef.current = ws;
+      setWsSocket(ws);
     };
     connect();
 
@@ -859,7 +861,7 @@ export default function App() {
               } />
               <Route path="/inbox" element={
                 <Workspace
-                  ws={wsRef.current}
+                  ws={wsSocket}
                   tickets={tickets} selectedId={selectedId} view={view} search={search}
                   onSelect={handleSelect} onViewChange={handleViewChange}
                   onSearchChange={handleSearchChange} onRefresh={loadTickets}

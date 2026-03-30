@@ -268,8 +268,8 @@ export default function MessageThread({ ticketId, ws, onStatusChange, pendingDra
       try {
         const event = JSON.parse(e.data) as Record<string, unknown>;
         const evId = (event.conversation_id ?? event.ticketId) as string | undefined;
-        const myId = ticket?.id ?? ticket?.conversation_id;
-        if (evId && myId && evId !== myId) return;
+        // Use the stable ticketId prop — ticket state may still be null on first mount
+        if (evId && evId !== ticketId) return;
 
         if (event.type === 'new_message') {
           setTicket(prev => prev ? { ...prev, history: [...prev.history, event.message as Message] } : prev);
@@ -290,7 +290,7 @@ export default function MessageThread({ ticketId, ws, onStatusChange, pendingDra
     };
     ws.addEventListener('message', handler);
     return () => ws.removeEventListener('message', handler);
-  }, [ws, ticket?.conversation_id]);
+  }, [ws, ticketId]);
 
   const emitTyping = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN || !ticket) return;

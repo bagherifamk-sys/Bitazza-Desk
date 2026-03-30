@@ -8,10 +8,12 @@ without any sync layer.
 Requires: psycopg2-binary  (add to requirements.txt)
 Env var:  DATABASE_URL  — same connection string used by the Node dashboard.
 """
-import json, time, uuid
+import json, logging, time, uuid
 from contextlib import contextmanager
 
 import psycopg2
+
+logger = logging.getLogger(__name__)
 import psycopg2.extras
 from config import settings
 
@@ -25,6 +27,7 @@ def _conn():
         yield conn
         conn.commit()
     except Exception:
+        logger.exception("DB transaction failed — rolling back")
         conn.rollback()
         raise
     finally:
@@ -81,7 +84,7 @@ def _fetch_user_profile(user_id: str) -> dict:
         if r.status_code == 200:
             return r.json()
     except Exception:
-        pass
+        logger.exception("Failed to fetch user profile for user_id=%s — continuing without it", user_id)
     return {}
 
 
@@ -123,7 +126,7 @@ def _ensure_customer(cur, user_id: str) -> str:
                 WHERE id = %s
             """, (user_id, display_name, email, phone, tier, kyc_status, row["id"]))
         except Exception:
-            pass
+            logger.exception("Failed to backfill profile for legacy customer user_id=%s — skipping enrichment", user_id)
         return row["id"]
 
     # New customer — fetch profile to populate real data

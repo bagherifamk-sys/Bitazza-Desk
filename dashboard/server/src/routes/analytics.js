@@ -80,7 +80,7 @@ router.get('/', async (req, res) => {
           SELECT t.id,
             EXTRACT(EPOCH FROM (
               (SELECT m.created_at FROM messages m
-               WHERE m.ticket_id = t.id AND m.sender_type = 'agent'
+               WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot')
                ORDER BY m.created_at ASC LIMIT 1)
               - t.created_at
             )) AS seconds,
@@ -88,7 +88,7 @@ router.get('/', async (req, res) => {
           FROM tickets t
           WHERE ${wt}
             AND EXISTS (
-              SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type = 'agent'
+              SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot')
             )
         ),
         by_day AS (

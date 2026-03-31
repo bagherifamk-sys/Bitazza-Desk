@@ -42,7 +42,7 @@ router.get('/live', async (req, res) => {
           COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 day') AS opened_today,
           COUNT(*) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at > NOW() - INTERVAL '1 day') AS resolved_today,
           AVG(EXTRACT(EPOCH FROM (
-            (SELECT created_at FROM messages WHERE ticket_id=t.id AND sender_type='agent' ORDER BY created_at ASC LIMIT 1)
+            (SELECT created_at FROM messages WHERE ticket_id=t.id AND sender_type IN ('agent','bot') ORDER BY created_at ASC LIMIT 1)
             - t.created_at
           ))) AS avg_first_response_s,
           COUNT(*) FILTER (WHERE channel = 'web' AND status IN ('Open_Live','In_Progress')) AS bot_active

@@ -50,16 +50,17 @@ router.get('/', async (req, res) => {
       await Promise.all([
 
         // ── FRT avg ───────────────────────────────────────────────────────────
+        // Counts first reply from bot OR human agent — bot replies are instant
         q(`
           SELECT AVG(EXTRACT(EPOCH FROM (
             (SELECT m.created_at FROM messages m
-             WHERE m.ticket_id = t.id AND m.sender_type = 'agent'
+             WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot')
              ORDER BY m.created_at ASC LIMIT 1)
             - t.created_at
           )))::float AS avg_s
           FROM tickets t
           WHERE ${baseWhere}
-            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type = 'agent')
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
         `),
 
         // ── FRT by agent ──────────────────────────────────────────────────────
@@ -67,14 +68,14 @@ router.get('/', async (req, res) => {
           SELECT u.name,
             AVG(EXTRACT(EPOCH FROM (
               (SELECT m.created_at FROM messages m
-               WHERE m.ticket_id = t.id AND m.sender_type = 'agent'
+               WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot')
                ORDER BY m.created_at ASC LIMIT 1)
               - t.created_at
             )))::float AS avg_s
           FROM tickets t
           JOIN users u ON t.assigned_to = u.id
           WHERE ${baseWhere}
-            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type = 'agent')
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
           GROUP BY u.name
           ORDER BY avg_s ASC
           LIMIT 10
@@ -85,23 +86,24 @@ router.get('/', async (req, res) => {
           SELECT DATE(t.created_at) AS date,
             AVG(EXTRACT(EPOCH FROM (
               (SELECT m.created_at FROM messages m
-               WHERE m.ticket_id = t.id AND m.sender_type = 'agent'
+               WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot')
                ORDER BY m.created_at ASC LIMIT 1)
               - t.created_at
             )))::float AS avg_s
           FROM tickets t
           WHERE ${baseWhere}
-            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type = 'agent')
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
           GROUP BY DATE(t.created_at)
           ORDER BY date ASC
         `),
 
-        // ── AHT avg (Open_Live → Closed_*) ───────────────────────────────────
+        // ── AHT avg — only tickets with actual interaction (excludes abandoned/auto-closed with no messages)
         q(`
           SELECT AVG(EXTRACT(EPOCH FROM (t.updated_at - t.created_at)))::float AS avg_s
           FROM tickets t
           WHERE ${baseWhere}
             AND t.status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
         `),
 
         // ── AHT by channel ────────────────────────────────────────────────────
@@ -111,6 +113,7 @@ router.get('/', async (req, res) => {
           FROM tickets t
           WHERE ${baseWhere}
             AND t.status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
           GROUP BY t.channel
           ORDER BY t.channel
         `),
@@ -122,6 +125,7 @@ router.get('/', async (req, res) => {
           FROM tickets t
           WHERE ${baseWhere}
             AND t.status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
           GROUP BY DATE(t.created_at)
           ORDER BY date ASC
         `),

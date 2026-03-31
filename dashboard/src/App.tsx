@@ -12,6 +12,7 @@ import AdminSettings from './components/AdminSettings';
 import AIStudio from './components/AIStudio';
 import MetricsDashboard from './components/MetricsDashboard';
 import HomeDashboard from './components/HomeDashboard';
+import KnowledgeBase from './components/KnowledgeBase';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -348,6 +349,12 @@ const Icons = {
         d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 002.25-2.25V6.75a2.25 2.25 0 00-2.25-2.25H6.75A2.25 2.25 0 004.5 6.75v10.5a2.25 2.25 0 002.25 2.25zm.75-12h9v9h-9v-9z" />
     </svg>
   ),
+  knowledge: (
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-[18px] h-[18px]">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.966 8.966 0 00-6 2.292m0-14.25v14.25" />
+    </svg>
+  ),
   admin: (
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-[18px] h-[18px]">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
@@ -407,6 +414,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/supervisor', label: 'Supervisor', icon: Icons.supervisor, permission: 'section.supervisor', shortcut: '⌘3' },
   { to: '/analytics',  label: 'Analytics',  icon: Icons.analytics,  permission: 'section.analytics',  shortcut: '⌘4' },
   { to: '/metrics',    label: 'Metrics',    icon: Icons.metrics,    permission: 'section.metrics',    shortcut: '⌘5' },
+  { to: '/knowledge',  label: 'Knowledge',  icon: Icons.knowledge,  permission: 'section.knowledge' },
   { to: '/studio',     label: 'AI Studio',  icon: Icons.studio,     permission: 'section.studio' },
   { to: '/admin',      label: 'Admin',      icon: Icons.admin,      permission: 'section.admin' },
 ];
@@ -417,6 +425,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/supervisor': 'Supervisor',
   '/analytics':  'Analytics',
   '/metrics':    'Metrics',
+  '/knowledge':  'Knowledge Base',
   '/studio':     'AI Studio',
   '/admin':      'Admin',
 };
@@ -574,19 +583,23 @@ function TopBar({ myStatus, activeChats, onStatusChange, onSearchOpen }: TopBarP
   const title = PAGE_TITLES[location.pathname] ?? 'Help Desk';
 
   return (
-    <div className="h-12 bg-surface-2 border-b border-surface-5 flex items-center justify-between px-5 shrink-0">
-      <h1 className="text-md font-semibold text-text-primary">{title}</h1>
-      <div className="flex items-center gap-2">
-        {/* Cmd+K search trigger */}
+    <div className="h-12 bg-surface-2 border-b border-surface-5 flex items-center px-5 shrink-0 gap-4">
+      <h1 className="text-md font-semibold text-text-primary shrink-0">{title}</h1>
+
+      {/* Center search bar */}
+      <div className="flex-1 flex justify-center">
         <button
           onClick={onSearchOpen}
-          className="flex items-center gap-2 h-8 px-3 rounded-md ring-1 ring-surface-5 bg-surface-3 hover:bg-surface-4 transition-colors text-text-muted text-xs"
+          className="flex items-center gap-2 h-8 w-full max-w-xl px-3 rounded-md ring-1 ring-surface-5 bg-surface-3 hover:bg-surface-4 transition-colors text-text-muted text-xs"
           title="Search (⌘K)"
         >
           {Icons.search}
-          <span className="hidden sm:block">Search</span>
-          <kbd className="hidden sm:block text-[10px] bg-surface-4 px-1.5 py-0.5 rounded text-text-muted font-mono ml-1">⌘K</kbd>
+          <span className="flex-1 text-left">Search by ticket ID, name, email or UID…</span>
+          <kbd className="text-[10px] bg-surface-4 px-1.5 py-0.5 rounded text-text-muted font-mono">⌘K</kbd>
         </button>
+      </div>
+
+      <div className="flex items-center gap-2 shrink-0">
         <button className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-4 transition-colors relative" title="Notifications">
           {Icons.bell}
           <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-brand" />
@@ -599,8 +612,11 @@ function TopBar({ myStatus, activeChats, onStatusChange, onSearchOpen }: TopBarP
 
 // ── Global Search Modal ───────────────────────────────────────────────────────
 
-function SearchModal({ onClose }: { onClose: () => void }) {
+function SearchModal({ onClose, onSelectTicket }: { onClose: () => void; onSelectTicket: (id: string) => void }) {
   const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Ticket[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -609,6 +625,27 @@ function SearchModal({ onClose }: { onClose: () => void }) {
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
+
+  // Debounced search
+  useEffect(() => {
+    if (!query.trim()) { setResults([]); return; }
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const tickets = await api.getTickets('all_open', query.trim());
+        setResults(tickets);
+        setActiveIdx(0);
+      } catch { setResults([]); }
+      finally { setLoading(false); }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, results.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter' && results[activeIdx]) { onSelectTicket(results[activeIdx].id); onClose(); }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center pt-24 animate-fade-in" onClick={onClose}>
@@ -623,14 +660,52 @@ function SearchModal({ onClose }: { onClose: () => void }) {
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Search tickets, customers, or IDs…"
+            onKeyDown={handleKeyDown}
+            placeholder="Search by ticket ID, name, email or UID…"
             className="flex-1 bg-transparent text-text-primary text-sm outline-none placeholder:text-text-muted"
           />
           <kbd className="text-[10px] text-text-muted bg-surface-4 px-2 py-1 rounded font-mono">ESC</kbd>
         </div>
-        <div className="p-4 text-text-muted text-xs text-center">
-          {query ? `Searching for "${query}"…` : 'Start typing to search conversations, customers, or ticket IDs.'}
-        </div>
+
+        {/* Results */}
+        {!query.trim() ? (
+          <div className="p-4 text-text-muted text-xs text-center">
+            Search by ticket ID, customer name, email, or UID
+          </div>
+        ) : loading ? (
+          <div className="p-4 text-text-muted text-xs text-center">Searching…</div>
+        ) : results.length === 0 ? (
+          <div className="p-4 text-text-muted text-xs text-center">No results for "{query}"</div>
+        ) : (
+          <ul className="max-h-80 overflow-y-auto py-1">
+            {results.map((t, i) => (
+              <li key={t.id}>
+                <button
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-4 transition-colors ${i === activeIdx ? 'bg-surface-4' : ''}`}
+                  onClick={() => { onSelectTicket(t.id); onClose(); }}
+                  onMouseEnter={() => setActiveIdx(i)}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-text-muted truncate">{t.id.slice(0, 8)}</span>
+                      <span className="text-xs font-medium text-text-primary truncate">{t.customer?.name || '—'}</span>
+                    </div>
+                    <div className="text-xs text-text-muted truncate mt-0.5">
+                      {t.customer?.email && <span className="mr-2">{t.customer.email}</span>}
+                      {t.customer?.user_id && t.customer.user_id !== t.customer.id && <span className="text-text-muted/60">{t.customer.user_id}</span>}
+                    </div>
+                  </div>
+                  <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    t.status === 'Open_Live' ? 'bg-accent-green/10 text-accent-green' :
+                    t.status === 'In_Progress' ? 'bg-accent-blue/10 text-accent-blue' :
+                    t.status === 'Escalated' ? 'bg-brand/10 text-brand' :
+                    'bg-surface-5 text-text-muted'
+                  }`}>{t.status.replace('_', ' ')}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );
@@ -710,6 +785,7 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const [wsSocket, setWsSocket] = useState<WebSocket | null>(null);
+  const loadTicketsRef = useRef<() => void>(() => {});
 
   // Apply theme on mount and change
   useEffect(() => { applyTheme(theme); }, [theme]);
@@ -733,6 +809,7 @@ export default function App() {
       if (!selectedId && data.length > 0) handleSelect(data[0].id);
     } catch { /* backend stub — silent */ }
   };
+  loadTicketsRef.current = loadTickets;
 
   useEffect(() => { if (user) loadTickets(); }, [view, search, user]);
 
@@ -788,8 +865,9 @@ export default function App() {
     };
     connect();
 
-    // 30-second polling fallback — catches missed WS events (reconnects, server restarts, etc.)
-    const pollInterval = setInterval(() => { loadTickets(); }, 30_000);
+    // 30-second polling fallback — use ref so interval always calls the latest loadTickets
+    // (which closes over the current selectedId, preventing stale-closure jump to first ticket)
+    const pollInterval = setInterval(() => { loadTicketsRef.current(); }, 30_000);
 
     return () => {
       wsRef.current?.close();
@@ -818,7 +896,9 @@ export default function App() {
     setTheme(t => t === 'dark' ? 'light' : 'dark');
   };
 
+  const navigate = useNavigate();
   const handleSelect = (id: string) => { sessionStorage.setItem('selectedId', id); setSelectedId(id); };
+  const handleSelectAndNavigate = (id: string) => { handleSelect(id); navigate('/inbox'); };
   const handleViewChange = (v: InboxView) => { sessionStorage.setItem('inboxView', v); setView(v); };
   const handleSearchChange = (s: string) => { sessionStorage.setItem('inboxSearch', s); setSearch(s); };
   const handleLogin = (u: AuthUser) => { setAuthUser(u); setUser(u); };
@@ -835,7 +915,7 @@ export default function App() {
   return (
     <PermissionProvider value={user.permissions ?? []}>
       <div className="flex h-screen bg-surface-0 overflow-hidden">
-        {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
+        {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} onSelectTicket={id => { handleSelectAndNavigate(id); setSearchOpen(false); }} />}
 
         <Sidebar
           user={user}
@@ -890,6 +970,11 @@ export default function App() {
               <Route path="/metrics" element={
                 <PermissionGuard permission="section.metrics" user={user}>
                   <MetricsDashboard />
+                </PermissionGuard>
+              } />
+              <Route path="/knowledge" element={
+                <PermissionGuard permission="section.knowledge" user={user}>
+                  <KnowledgeBase currentUser={user} />
                 </PermissionGuard>
               } />
               <Route path="*" element={<Navigate to="/" replace />} />

@@ -188,6 +188,7 @@ def test_chat_message_calls_agent(client):
     mock_result.agent_name = None
     mock_result.agent_avatar = None
     mock_result.agent_avatar_url = None
+    mock_result.confidence = 0.9
     mock_result.resolved = False
     mock_result.specialist_intro = None
 

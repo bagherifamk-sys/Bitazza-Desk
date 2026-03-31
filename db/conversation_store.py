@@ -496,7 +496,7 @@ _VALID_STATUSES = {
 }
 
 
-def get_open_tickets(search: str = "", status_filter: str = "all") -> list[dict]:
+def get_open_tickets(search: str = "", status_filter: str = "open") -> list[dict]:
     with _conn() as conn:
         cur = conn.cursor()
         base_query = """

@@ -51,8 +51,8 @@ const DATE_RANGES = [
 
 const CHANNELS: Channel[] = ['web', 'line', 'facebook', 'email'];
 const CATEGORIES: TicketCategory[] = [
-  'kyc','deposit_fiat','deposit_crypto','withdrawal_fiat','withdrawal_crypto',
-  'change_information','account_security','trading_platform','general',
+  'kyc_verification', 'account_restriction', 'password_2fa_reset',
+  'fraud_security', 'withdrawal_issue', 'ai_handling',
 ];
 
 function fmtSeconds(s: number | null | undefined): string {

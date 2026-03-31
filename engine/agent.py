@@ -330,10 +330,16 @@ def chat(
         ticket_id = get_ticket_id_by_conversation(conversation_id)
         if ticket_id:
             update_ticket_status(ticket_id, "pending_human")
-        # Prefer the category inferred from the current message over the session default
         effective_category = detect_category_from_message(user_message) or category
+        handoff = build_handoff_message(effective_category, language)
+        # If the model gave a substantive answer but escalation is only due to low confidence
+        # (not needs_human), show the answer first so the customer isn't left in the dark.
+        if not needs_human and response_text and len(response_text.strip()) > 20:
+            combined_text = f"{response_text}\n\n{handoff}"
+        else:
+            combined_text = handoff
         return AgentResponse(
-            text=build_handoff_message(effective_category, language),
+            text=combined_text,
             language=language, escalated=True,
             escalation_reason=reason, ticket_id=ticket_id,
         )

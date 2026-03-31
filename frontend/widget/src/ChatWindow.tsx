@@ -266,7 +266,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
             timestamp: m.created_at * 1000,
             agentName: m.agent_name,
             agentAvatar: m.agent_avatar,
-            agentAvatarUrl: m.agent_avatar_url ?? null,
+            agentAvatarUrl: m.agent_avatar_url ?? undefined,
           })),
         ]);
       }

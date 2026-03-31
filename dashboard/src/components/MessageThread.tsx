@@ -230,6 +230,17 @@ export default function MessageThread({ ticketId, ws, onStatusChange, pendingDra
   const messages: Message[] = useMemo(() => ticket?.history ?? [], [ticket]);
   const virtualRange = useVirtualRange(messages.length, scrollRef);
 
+  // Reset per-ticket state when the selected ticket changes
+  useEffect(() => {
+    setTicket(null);
+    setReply('');
+    setIsAiDraft(false);
+    setIsNote(false);
+    setLoading(true);
+    setTypingAgents([]);
+    setCannedMatches([]);
+  }, [ticketId]);
+
   const load = useCallback(async () => {
     try {
       const data = await api.getTicket(ticketId);

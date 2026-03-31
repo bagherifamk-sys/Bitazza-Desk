@@ -742,7 +742,6 @@ function Workspace({ ws, tickets, selectedId, view, search, statusFilter, onSele
       <div className="flex-1 overflow-hidden">
         {selectedId
           ? <MessageThread
-              key={selectedId}
               ticketId={selectedId}
               ws={ws}
               onStatusChange={onRefresh}

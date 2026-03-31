@@ -54,6 +54,7 @@ function isSlaRisk(ticket: Ticket): boolean {
 
 interface Props {
   tickets: Ticket[];
+  ticketStats: { open: number; active: number; escalated: number };
   selectedId: string | null;
   view: InboxView;
   search: string;
@@ -66,7 +67,7 @@ interface Props {
 }
 
 export default function ConversationList({
-  tickets, selectedId, view, search, statusFilter,
+  tickets, ticketStats, selectedId, view, search, statusFilter,
   onSelect, onViewChange, onSearchChange, onStatusFilterChange, onRefresh,
 }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -103,9 +104,9 @@ export default function ConversationList({
     } finally { setBulkLoading(false); }
   };
 
-  const openCount      = tickets.filter(t => t.status === 'Open_Live').length;
-  const activeCount    = tickets.filter(t => t.status === 'In_Progress').length;
-  const escalatedCount = tickets.filter(t => t.status === 'Escalated').length;
+  const openCount      = ticketStats.open;
+  const activeCount    = ticketStats.active;
+  const escalatedCount = ticketStats.escalated;
 
   return (
     <aside className="w-[300px] shrink-0 bg-surface-1 border-r border-surface-5 flex flex-col">

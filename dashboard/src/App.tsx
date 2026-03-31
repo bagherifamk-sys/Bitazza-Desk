@@ -716,6 +716,7 @@ function SearchModal({ onClose, onSelectTicket }: { onClose: () => void; onSelec
 interface WorkspaceProps {
   ws: WebSocket | null;
   tickets: Ticket[];
+  ticketStats: { open: number; active: number; escalated: number };
   selectedId: string | null;
   view: InboxView;
   search: string;
@@ -727,14 +728,14 @@ interface WorkspaceProps {
   onRefresh: () => void;
 }
 
-function Workspace({ ws, tickets, selectedId, view, search, statusFilter, onSelect, onViewChange, onSearchChange, onStatusFilterChange, onRefresh }: WorkspaceProps) {
+function Workspace({ ws, tickets, ticketStats, selectedId, view, search, statusFilter, onSelect, onViewChange, onSearchChange, onStatusFilterChange, onRefresh }: WorkspaceProps) {
   const selectedTicket = tickets.find(t => t.id === selectedId) ?? null;
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
 
   return (
     <div className="flex flex-1 overflow-hidden">
       <ConversationList
-        tickets={tickets} selectedId={selectedId} view={view} search={search}
+        tickets={tickets} ticketStats={ticketStats} selectedId={selectedId} view={view} search={search}
         statusFilter={statusFilter}
         onSelect={onSelect} onViewChange={onViewChange}
         onSearchChange={onSearchChange} onStatusFilterChange={onStatusFilterChange} onRefresh={onRefresh}
@@ -779,6 +780,7 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar_collapsed') === 'true');
   const [theme, setTheme] = useState<'dark' | 'light'>(getTheme);
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [ticketStats, setTicketStats] = useState({ open: 0, active: 0, escalated: 0 });
   const [selectedId, setSelectedId] = useState<string | null>(() => sessionStorage.getItem('selectedId'));
   const [view, setView] = useState<InboxView>(() => (sessionStorage.getItem('inboxView') as InboxView) ?? 'all_open');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => (sessionStorage.getItem('inboxStatusFilter') as StatusFilter) ?? 'all');
@@ -807,8 +809,12 @@ export default function App() {
 
   const loadTickets = async () => {
     try {
-      const data = await api.getTickets(search ? 'all' : view, search, statusFilter);
+      const [data, stats] = await Promise.all([
+        api.getTickets(search ? 'all' : view, search, statusFilter),
+        api.getTicketStats(),
+      ]);
       setTickets(data);
+      setTicketStats({ open: stats.open, active: stats.active, escalated: stats.escalated });
       if (!selectedId && data.length > 0) handleSelect(data[0].id);
     } catch { /* backend stub — silent */ }
   };
@@ -946,7 +952,7 @@ export default function App() {
               <Route path="/inbox" element={
                 <Workspace
                   ws={wsSocket}
-                  tickets={tickets} selectedId={selectedId} view={view} search={search}
+                  tickets={tickets} ticketStats={ticketStats} selectedId={selectedId} view={view} search={search}
                   statusFilter={statusFilter}
                   onSelect={handleSelect} onViewChange={handleViewChange}
                   onSearchChange={handleSearchChange} onStatusFilterChange={handleStatusFilterChange} onRefresh={loadTickets}

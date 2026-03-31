@@ -5,13 +5,13 @@ type TicketChannel = Channel;
 // ── Status config ─────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<TicketStatus, { label: string; dot: string; bg: string; text: string }> = {
-  Open_Live:           { label: 'Open',       dot: 'bg-accent-green', bg: 'bg-accent-green/10', text: 'text-accent-green' },
-  In_Progress:         { label: 'Active',     dot: 'bg-accent-blue',  bg: 'bg-accent-blue/10',  text: 'text-accent-blue'  },
+  Open_Live:           { label: 'Open',       dot: 'bg-accent-blue',  bg: 'bg-accent-blue/10',  text: 'text-accent-blue'  },
+  In_Progress:         { label: 'Active',     dot: 'bg-purple-400',   bg: 'bg-purple-400/10',   text: 'text-purple-400'   },
   Pending_Customer:    { label: 'Pending',    dot: 'bg-accent-amber', bg: 'bg-accent-amber/10', text: 'text-accent-amber' },
   Escalated:           { label: 'Escalated',  dot: 'bg-brand',        bg: 'bg-brand/10',        text: 'text-brand'        },
-  Closed_Resolved:     { label: 'Resolved',   dot: 'bg-text-muted',   bg: 'bg-surface-4',       text: 'text-text-muted'  },
-  Closed_Unresponsive: { label: 'Closed',     dot: 'bg-text-muted',   bg: 'bg-surface-4',       text: 'text-text-muted'  },
-  Orphaned:            { label: 'Orphaned',   dot: 'bg-text-muted',   bg: 'bg-surface-4',       text: 'text-text-muted'  },
+  Closed_Resolved:     { label: 'Resolved',   dot: 'bg-accent-green', bg: 'bg-accent-green/10', text: 'text-accent-green' },
+  Closed_Unresponsive: { label: 'Closed',     dot: 'bg-accent-green', bg: 'bg-accent-green/10', text: 'text-accent-green' },
+  Orphaned:            { label: 'Orphaned',   dot: 'bg-accent-green', bg: 'bg-accent-green/10', text: 'text-accent-green' },
 };
 
 const PRIORITY_CONFIG: Record<TicketPriority, { label: string; bg: string; text: string }> = {

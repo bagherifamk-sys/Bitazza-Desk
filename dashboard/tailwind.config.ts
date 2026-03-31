@@ -23,16 +23,16 @@ export default {
         },
         // ── Brand ──
         brand: {
-          DEFAULT: '#E63946',
-          dim:     '#C1303B',
+          DEFAULT: 'rgb(230 57 70)',
+          dim:     'rgb(193 48 59)',
           subtle:  'rgba(230,57,70,0.08)',
         },
         // ── Status / Accent ──
         accent: {
-          blue:  '#3B82F6',
-          green: '#22C55E',
-          amber: '#F59E0B',
-          red:   '#E63946',
+          blue:  'rgb(59 130 246)',
+          green: 'rgb(34 197 94)',
+          amber: 'rgb(245 158 11)',
+          red:   'rgb(230 57 70)',
         },
       },
       fontFamily: {

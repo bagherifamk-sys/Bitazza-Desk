@@ -527,7 +527,7 @@ def get_open_tickets(search: str = "", status_filter: str = "all") -> list[dict]
         if status_filter in _VALID_STATUSES:
             base_query += " AND t.status = %s"
             params.append(status_filter)
-        else:
+        elif status_filter != "all":
             # default: hide closed tickets (legacy "all_open" behaviour)
             base_query += " AND t.status NOT IN ('Closed_Resolved', 'Closed_Unresponsive')"
         if search:

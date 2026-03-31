@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Message, CSBotConfig, IssueCategory } from './types';
 import { ISSUE_CATEGORIES } from './types';
-import { startConversation, sendMessage, fetchHistory, greetConversation, setCategoryAgent, getStoredSession, storeSessionLang, storeSessionCategory, storeSessionAgent, clearStoredSession } from './api';
+import { startConversation, sendMessage, fetchHistory, setCategoryAgent, getStoredSession, storeSessionLang, storeSessionCategory, storeSessionAgent, clearStoredSession } from './api';
 import MessageBubble from './MessageBubble';
 import TypingIndicator from './TypingIndicator';
 import CategoryPicker from './CategoryPicker';
@@ -71,7 +71,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
   const [csatSubmitted, setCsatSubmitted] = useState(false);
   const lastAgentMsgTime = useRef(0);
   const lastFailedText = useRef('');
-  const sendRef = useRef<((text: string, category?: string) => Promise<void>) | null>(null);
+  const sendRef = useRef<((text: string, category?: string, skipUserBubble?: boolean) => Promise<void>) | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const t = UI_TEXT[lang];
@@ -142,67 +142,81 @@ export default function ChatWindow({ cfg, onClose }: Props) {
     const now = Date.now();
     setMessages([
       {
-        id: 'greeting-en',
+        id: 'greeting',
         role: 'assistant',
-        content: '👋 Welcome to Freedom / Bitazza Support!\n\nPlease select your preferred language:',
+        content: '👋 Hi! How can I help you today?\n\nPlease select your language:\n---\n👋 สวัสดีค่ะ! มีอะไรให้ช่วยได้บ้างคะ?\n\nกรุณาเลือกภาษา:',
         timestamp: now,
-      },
-      {
-        id: 'greeting-th',
-        role: 'assistant',
-        content: 'ยินดีต้อนรับสู่ฝ่ายสนับสนุน Freedom / Bitazza!\n\nกรุณาเลือกภาษาที่คุณต้องการ:',
-        timestamp: now + 1,
+        senderName: 'Bitazza Support',
       },
     ]);
   }
 
+  const AGENT_INTRO = {
+    en: (name: string) => `Hi, I'm ${name}! 👋 Let me pull up your account details and I'll have an answer for you in just a moment.`,
+    th: (name: string) => `สวัสดีค่ะ ฉันชื่อ${name}! 👋 กำลังดึงข้อมูลบัญชีของคุณ รอสักครู่นะคะ`,
+  };
+
   const selectCategory = useCallback((category: IssueCategory) => {
     setSelectedCategory(category);
     storeSessionCategory(category);
-    // Tell backend to re-assign the specialist agent for this category
-    if (convId) {
-      setCategoryAgent(cfg, convId, category).then(({ agentName, agentAvatarUrl }) => {
-        setBotName(agentName);
-        setBotAvatarUrl(agentAvatarUrl || null);
-      }).catch(() => {/* non-critical — persona update fails silently */});
-    }
     const cat = ISSUE_CATEGORIES.find((c) => c.key === category)!;
     const openingMsg = cat.openingMessage[lang];
-    sendRef.current?.(openingMsg, category);
+
+    // 1. Show the user's opening message bubble immediately
+    setMessages((prev) => [...prev, {
+      id: crypto.randomUUID(),
+      role: 'user' as const,
+      content: openingMsg,
+      timestamp: Date.now(),
+    }]);
+
+    if (convId) {
+      setCategoryAgent(cfg, convId, category).then(({ agentName, agentAvatarUrl }) => {
+        const resolvedName = agentName ?? 'Support Agent';
+        setBotName(resolvedName);
+        setBotAvatarUrl(agentAvatarUrl || null);
+
+        // 2. After a short human-feel delay, show the agent's intro message
+        //    Skip for "other" — the AI's first response will ask what they need.
+        setTimeout(() => {
+          if (category !== 'other') {
+            setMessages((prev) => [...prev, {
+              id: crypto.randomUUID(),
+              role: 'assistant' as const,
+              content: AGENT_INTRO[lang](resolvedName),
+              timestamp: Date.now(),
+            }]);
+          }
+
+          // 3. Then fire the API call — send() will skip adding the user bubble again
+          sendRef.current?.(openingMsg, category, true);
+        }, 1200 + Math.random() * 600);
+      }).catch(() => {
+        sendRef.current?.(openingMsg, category, true);
+      });
+    } else {
+      sendRef.current?.(openingMsg, category, true);
+    }
   }, [convId, cfg, lang]);
+
+  const CATEGORY_PROMPT = {
+    en: 'Please select the type of issue you need help with:',
+    th: 'กรุณาเลือกประเภทปัญหาที่ต้องการความช่วยเหลือ:',
+  };
 
   const selectLanguage = useCallback((selected: 'en' | 'th') => {
     setLang(selected);
     setLangSelected(true);
     storeSessionLang(selected);
-    if (convId) {
-      greetConversation(cfg, convId, selected).then(({ greeting, botName: name, botAvatarUrl: avatarUrl }) => {
-        setBotName(name);
-        setBotAvatarUrl(avatarUrl);
-        setMessages((prev) => [...prev, {
-          id: 'welcome',
-          role: 'assistant',
-          content: greeting,
-          timestamp: Date.now(),
-        }]);
-      }).catch(() => {
-        // Fallback to local text if API call fails
-        setMessages((prev) => [...prev, {
-          id: 'welcome',
-          role: 'assistant',
-          content: UI_TEXT[selected].welcome,
-          timestamp: Date.now(),
-        }]);
-      });
-    } else {
-      setMessages((prev) => [...prev, {
-        id: 'welcome',
-        role: 'assistant',
-        content: UI_TEXT[selected].welcome,
-        timestamp: Date.now(),
-      }]);
-    }
-  }, [convId, cfg]);
+    // Show a static category-prompt message only — no AI agent call until category is selected
+    setMessages((prev) => [...prev, {
+      id: 'category-prompt',
+      role: 'assistant',
+      content: CATEGORY_PROMPT[selected],
+      timestamp: Date.now(),
+      senderName: 'Bitazza Support',
+    }]);
+  }, []);
 
   // Auto-scroll
   useEffect(() => {
@@ -261,18 +275,20 @@ export default function ChatWindow({ cfg, onClose }: Props) {
     return () => clearInterval(interval);
   }, [convId, cfg]);
 
-  const send = useCallback(async (text: string, category?: string) => {
+  const send = useCallback(async (text: string, category?: string, skipUserBubble = false) => {
     if (!text.trim() || !convId || loading) return;
     setError(null);
 
     const trimmed = text.trim();
-    const userMsg: Message = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: trimmed,
-      timestamp: Date.now(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
+    if (!skipUserBubble) {
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: trimmed,
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+    }
     setInput('');
     setLoading(true);
 
@@ -284,15 +300,55 @@ export default function ChatWindow({ cfg, onClose }: Props) {
 
       // reply is null when a human is already handling — suppress the bot bubble entirely
       if (result.reply !== null) {
-        const assistantMsg: Message = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: result.reply,
-          timestamp: Date.now(),
-          escalated: result.escalated,
-        };
-        playNotificationBeep();
-        setMessages((prev) => [...prev, assistantMsg]);
+        if (result.transitionMessage) {
+          // 1. Show the outgoing agent's handoff notice — pinned to the current agent's identity
+          await new Promise((r) => setTimeout(r, 900 + Math.random() * 400));
+          playNotificationBeep();
+          const outgoingName = botName;
+          const outgoingAvatarUrl = botAvatarUrl;
+          setMessages((prev) => [...prev, {
+            id: crypto.randomUUID(),
+            role: 'assistant' as const,
+            content: result.transitionMessage!,
+            timestamp: Date.now(),
+            senderName: outgoingName ?? undefined,
+            agentAvatarUrl: outgoingAvatarUrl ?? undefined,
+          }]);
+
+          // 2. Swap persona to the incoming specialist
+          const incomingName = result.agentName ?? botName;
+          const incomingAvatarUrl = result.agentAvatarUrl ?? null;
+          if (result.agentName) {
+            setBotName(incomingName);
+            setBotAvatarUrl(incomingAvatarUrl);
+          }
+
+          // 3. Brief pause, then specialist's reply — pinned to specialist's identity
+          await new Promise((r) => setTimeout(r, 2200 + Math.random() * 600));
+          playNotificationBeep();
+          setMessages((prev) => [...prev, {
+            id: crypto.randomUUID(),
+            role: 'assistant' as const,
+            content: result.reply,
+            timestamp: Date.now(),
+            escalated: result.escalated,
+            senderName: incomingName ?? undefined,
+            agentAvatarUrl: incomingAvatarUrl ?? undefined,
+          }]);
+        } else {
+          // Normal reply — pin current bot identity onto the bubble
+          await new Promise((r) => setTimeout(r, 900 + Math.random() * 600));
+          playNotificationBeep();
+          setMessages((prev) => [...prev, {
+            id: crypto.randomUUID(),
+            role: 'assistant' as const,
+            content: result.reply,
+            timestamp: Date.now(),
+            escalated: result.escalated,
+            senderName: botName ?? undefined,
+            agentAvatarUrl: botAvatarUrl ?? undefined,
+          }]);
+        }
       }
 
       if (result.offerResolution && !escalated) {
@@ -310,10 +366,15 @@ export default function ChatWindow({ cfg, onClose }: Props) {
         ]);
       }
 
+      if (result.upgradedCategory) {
+        // Update category state so future messages use the specialist's tools/overlay.
+        // Persona swap is handled inside the transition animation block above.
+        setSelectedCategory(result.upgradedCategory as IssueCategory);
+        storeSessionCategory(result.upgradedCategory);
+      }
+
       if (result.escalated) {
         setEscalated(true);
-        // Don't set escalatedAgent here — we don't know yet which real human will pick up.
-        // It gets set once the human agent sends their first message (via polling).
         setConsecutiveLow(0);
       } else {
         setConsecutiveLow(0);

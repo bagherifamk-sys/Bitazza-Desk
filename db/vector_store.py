@@ -1,8 +1,10 @@
 """
 Vector store abstraction over ChromaDB.
-Uses a word-level TF-IDF-style embedding (numpy only, no downloads required).
-Significantly better than character n-grams for support ticket keyword matching.
-Swap _embed_fn for a real model (e.g. sentence-transformers) in production.
+
+Embedding model: Gemini text-embedding-001 (3072-dim, semantic).
+Falls back to word-hash embedding if GEMINI_API_KEY is unavailable.
+
+Gemini cosine distances: <0.35 = strong match, <0.55 = relevant.
 """
 try:
     import chromadb
@@ -11,14 +13,55 @@ try:
 except ImportError:
     _CHROMA_AVAILABLE = False
 
-import hashlib, logging, math, re
+import hashlib, logging, math, re, os, time
 
 logger = logging.getLogger(__name__)
 from config.settings import CHROMA_PATH
 
-_DIM = 512
+# ── Gemini embedding ──────────────────────────────────────────────────────────
 
-# Common English/Thai stop words to ignore
+_EMBED_MODEL = "models/gemini-embedding-001"
+_EMBED_BATCH  = 20   # Gemini embedding API batch size limit
+_EMBED_RPM    = 1500 # requests-per-minute quota; batch of 20 = 75 batches/min max
+
+_gemini_client = None
+
+def _get_gemini_client():
+    global _gemini_client
+    if _gemini_client is not None:
+        return _gemini_client
+    try:
+        from google import genai as _genai
+        from config.settings import GEMINI_API_KEY
+        if not GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY not set")
+        _gemini_client = _genai.Client(api_key=GEMINI_API_KEY)
+        return _gemini_client
+    except Exception as exc:
+        logger.warning("Gemini embedding unavailable (%s) — falling back to word-hash", exc)
+        return None
+
+
+def _gemini_embed_batch(texts: list[str]) -> list[list[float]] | None:
+    """Call Gemini embedding API for a batch of texts. Returns None on failure."""
+    client = _get_gemini_client()
+    if client is None:
+        return None
+    try:
+        result = client.models.embed_content(
+            model=_EMBED_MODEL,
+            contents=texts,
+        )
+        return [e.values for e in result.embeddings]
+    except Exception as exc:
+        logger.warning("Gemini embed_content failed: %s — falling back to word-hash", exc)
+        return None
+
+
+# ── Word-hash fallback embedding (unchanged) ──────────────────────────────────
+
+_DIM = 3072  # Match Gemini dim so collections stay compatible if we switch mid-run
+
 _STOP = {
     "the","a","an","is","it","to","of","and","in","for","on","with","my","i",
     "me","you","your","we","be","have","has","was","are","do","did","not","or",
@@ -27,7 +70,7 @@ _STOP = {
 
 
 def _word_embed(text: str) -> list[float]:
-    """Word-level hashed embedding with IDF-style dampening via log(1+freq)."""
+    """Word-level hashed embedding — used only when Gemini API is unreachable."""
     vec = [0.0] * _DIM
     words = re.findall(r"[a-z0-9_]+|[\u0e00-\u0e7f]+", text.lower())
     word_counts: dict[str, int] = {}
@@ -38,7 +81,6 @@ def _word_embed(text: str) -> list[float]:
         h = int(hashlib.md5(w.encode()).hexdigest(), 16)
         idx = h % _DIM
         vec[idx] += math.log1p(count)
-        # Also hash bigrams with next word for phrase context
     word_list = [w for w in words if w not in _STOP and len(w) > 1]
     for i in range(len(word_list) - 1):
         bigram = word_list[i] + "_" + word_list[i+1]
@@ -49,24 +91,46 @@ def _word_embed(text: str) -> list[float]:
     return [x / norm for x in vec]
 
 
-if _CHROMA_AVAILABLE:
-    class _WordEmbedFn(EmbeddingFunction):
-        def __call__(self, input: Documents) -> Embeddings:
-            return [_word_embed(doc) for doc in input]
+# ── ChromaDB embedding function ───────────────────────────────────────────────
 
-    _embed_fn = _WordEmbedFn()
+if _CHROMA_AVAILABLE:
+    class _GeminiEmbedFn(EmbeddingFunction):
+        """
+        Calls Gemini embedding API in batches.
+        Falls back to word-hash per-document if the API is unavailable.
+        """
+        def __call__(self, input: Documents) -> Embeddings:
+            results: list[list[float]] = [[] for _ in input]
+            # Process in batches
+            for start in range(0, len(input), _EMBED_BATCH):
+                batch = list(input[start:start + _EMBED_BATCH])
+                vecs = _gemini_embed_batch(batch)
+                if vecs is not None:
+                    for i, vec in enumerate(vecs):
+                        results[start + i] = list(vec)
+                else:
+                    # Fallback: word-hash for each doc in failed batch
+                    for i, doc in enumerate(batch):
+                        results[start + i] = _word_embed(doc)
+                # Small delay to stay within RPM quota when processing many docs
+                if start + _EMBED_BATCH < len(input):
+                    time.sleep(0.05)
+            return results
+
+    _embed_fn = _GeminiEmbedFn()
 else:
     _embed_fn = None
 
 _client = None
 
 
+# ── ChromaDB client & collection ──────────────────────────────────────────────
+
 def get_client():
     global _client
     if not _CHROMA_AVAILABLE:
         raise RuntimeError("chromadb not installed. Run: pip install chromadb")
     if _client is None:
-        import os
         path = os.environ.get("CHROMA_PATH") or CHROMA_PATH
         _client = chromadb.PersistentClient(path=path)
     return _client
@@ -79,6 +143,8 @@ def get_collection(name: str = "knowledge_base"):
         metadata={"hnsw:space": "cosine"},
     )
 
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def upsert_documents(docs: list[dict], collection_name: str = "knowledge_base") -> None:
     """docs: list of {id, text, metadata}"""
@@ -105,9 +171,25 @@ def query(text: str, n_results: int = 5, collection_name: str = "knowledge_base"
     return chunks
 
 
+def delete_by_metadata(filter_key: str, filter_value: str, collection_name: str = "knowledge_base") -> int:
+    """Delete all chunks whose metadata[filter_key] == filter_value. Returns count deleted."""
+    if not _CHROMA_AVAILABLE:
+        return 0
+    try:
+        col = get_collection(collection_name)
+        results = col.get(where={filter_key: {"$eq": filter_value}})
+        ids = results.get("ids") or []
+        if ids:
+            col.delete(ids=ids)
+        return len(ids)
+    except Exception:
+        logger.exception("Failed to delete_by_metadata %s=%s", filter_key, filter_value)
+        return 0
+
+
 def collection_count(collection_name: str = "knowledge_base") -> int:
     if not _CHROMA_AVAILABLE:
-        return 0  # RAG disabled until chromadb installed
+        return 0
     try:
         return get_collection(collection_name).count()
     except Exception:

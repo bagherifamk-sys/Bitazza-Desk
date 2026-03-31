@@ -641,19 +641,19 @@ function TagsTab() {
   const [tags, setTags]     = useState<string[]>([]);
   const [newTag, setNewTag] = useState('');
 
-  useEffect(() => {
-    const stored = localStorage.getItem('global_tags');
-    if (stored) setTags(JSON.parse(stored));
-  }, []);
+  useEffect(() => { api.getTags().then(setTags).catch(() => {}); }, []);
 
-  const persist = (next: string[]) => { setTags(next); localStorage.setItem('global_tags', JSON.stringify(next)); };
-  const add = () => {
+  const add = async () => {
     const t = newTag.trim().toLowerCase().replace(/\s+/g, '_');
     if (!t || tags.includes(t)) return;
-    persist([...tags, t]);
     setNewTag('');
+    const updated = await api.createTag(t).catch(() => null);
+    if (updated) setTags(updated);
   };
-  const remove = (tag: string) => persist(tags.filter(t => t !== tag));
+  const remove = async (tag: string) => {
+    const updated = await api.deleteTag(tag).catch(() => null);
+    if (updated) setTags(updated);
+  };
 
   return (
     <div className="space-y-4">

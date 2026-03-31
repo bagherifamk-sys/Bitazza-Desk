@@ -20,15 +20,12 @@ export type AgentStatus = 'Available' | 'Busy' | 'Break' | 'Offline' | 'away' | 
 export type Sentiment = 'positive' | 'neutral' | 'negative';
 
 export type TicketCategory =
-  | 'kyc'
-  | 'deposit_fiat'
-  | 'deposit_crypto'
-  | 'withdrawal_fiat'
-  | 'withdrawal_crypto'
-  | 'change_information'
-  | 'account_security'
-  | 'trading_platform'
-  | 'general';
+  | 'kyc_verification'
+  | 'account_restriction'
+  | 'password_2fa_reset'
+  | 'fraud_security'
+  | 'withdrawal_issue'
+  | 'ai_handling';
 
 export type InboxView =
   | 'all_open'
@@ -37,6 +34,15 @@ export type InboxView =
   | 'sla_risk'
   | 'waiting'
   | 'by_priority';
+
+export type StatusFilter =
+  | 'all'
+  | 'Open_Live'
+  | 'In_Progress'
+  | 'Pending_Customer'
+  | 'Escalated'
+  | 'Closed_Resolved'
+  | 'Closed_Unresponsive';
 
 export type SenderType =
   | 'customer'
@@ -223,6 +229,20 @@ export interface AuthUser {
   team?: string;
   token: string;
   permissions: string[];
+}
+
+// ── Knowledge Base ────────────────────────────────────────────────────────────
+
+export type KnowledgeSourceType = 'url' | 'pdf' | 'docx';
+
+export interface KnowledgeItem {
+  id: number;
+  title: string;
+  source_type: KnowledgeSourceType;
+  source_ref: string | null;
+  chunk_count: number;
+  created_by: number | null;
+  created_at: number; // unix seconds
 }
 
 // Legacy — kept so old components referencing Conversation don't break

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel
 from api.middleware.auth import get_user_id
 from api.ws_manager import manager
-from db.conversation_store import init_db, create_conversation, add_message, get_history, create_ticket, assign_ai_persona, get_ai_persona, is_human_handling, update_ticket_category
+from db.conversation_store import init_db, create_conversation, add_message, get_history, create_ticket, assign_ai_persona, get_ai_persona, is_human_handling, update_ticket_category, count_consecutive_low_confidence
 from engine.agent import chat
 from engine.mock_agents import pick_agent
 from engine.prompt_templates import build_greeting
@@ -40,7 +40,7 @@ class GreetResponse(BaseModel):
 class MessageRequest(BaseModel):
     conversation_id: str
     message: str
-    consecutive_low_confidence: int = 0  # tracked client-side
+    consecutive_low_confidence: int = 0  # deprecated — server computes this now; kept for backwards compatibility
     category: str | None = None  # issue category selected by user in widget
 
 
@@ -54,6 +54,8 @@ class MessageResponse(BaseModel):
     agent_avatar_url: str | None = None
     offer_resolution: bool = False
     specialist_intro: str | None = None  # First message from the incoming specialist agent
+    upgraded_category: str | None = None  # Set when mid-convo specialist handoff occurred
+    transition_message: str | None = None  # Outgoing-agent farewell shown before specialist reply
 
 
 @router.post("/start", response_model=StartResponse)
@@ -156,19 +158,31 @@ def send_message(body: MessageRequest, user_id: str = Depends(get_user_id)):
             escalated=True,
         )
 
+    # Compute consecutive low-confidence count server-side — not trusted from client
+    consecutive_low = count_consecutive_low_confidence(body.conversation_id)
+
     # Run agent
     result = chat(
         conversation_id=body.conversation_id,
         user_id=user_id,
         user_message=body.message,
-        consecutive_low_confidence=body.consecutive_low_confidence,
+        consecutive_low_confidence=consecutive_low,
         category=body.category,
     )
 
-    # Persist assistant reply
+    # If the agent detected a mid-conversation category upgrade, update the DB persona
+    # and ticket category so the dashboard and future messages use the specialist.
+    if result.upgraded_category:
+        from engine.mock_agents import pick_agent as _pick_agent
+        specialist = _pick_agent(result.upgraded_category)
+        assign_ai_persona(body.conversation_id, specialist["name"], specialist["avatar"], specialist["avatar_url"])
+        update_ticket_category(body.conversation_id, result.upgraded_category)
+
+    # Persist assistant reply — include confidence so server-side counter can read it
     add_message(body.conversation_id, "assistant", result.text, {
         "escalated": result.escalated,
         "escalation_reason": result.escalation_reason,
+        "confidence": result.confidence,
     })
 
     return MessageResponse(
@@ -181,6 +195,8 @@ def send_message(body: MessageRequest, user_id: str = Depends(get_user_id)):
         agent_avatar_url=result.agent_avatar_url,
         offer_resolution=result.resolved,
         specialist_intro=result.specialist_intro,
+        upgraded_category=result.upgraded_category,
+        transition_message=getattr(result, 'transition_message', None),
     )
 
 

@@ -10,7 +10,7 @@ import json, re
 from google import genai
 from google.genai import types as genai_types
 from google.genai import errors as genai_errors
-from config.settings import GEMINI_API_KEY, MODEL, MAX_TOKENS
+from config.settings import GEMINI_API_KEY, MODEL, MAX_TOKENS, ESCALATION_CONFIDENCE_THRESHOLD
 from engine.retriever import retrieve_with_fallback
 from engine.account_tools import TOOLS, TOOL_DEFINITIONS
 from engine.security_filter import pre_filter, post_filter, contains_financial_advice_request
@@ -43,7 +43,8 @@ class AgentResponse:
                  escalation_reason: str = "", ticket_id: str | None = None,
                  agent_name: str | None = None, agent_avatar: str | None = None,
                  agent_avatar_url: str | None = None, resolved: bool = False,
-                 specialist_intro: str | None = None):
+                 specialist_intro: str | None = None, confidence: float = 1.0,
+                 upgraded_category: str | None = None):
         self.text = text
         self.language = language
         self.escalated = escalated
@@ -54,6 +55,53 @@ class AgentResponse:
         self.agent_avatar_url = agent_avatar_url
         self.resolved = resolved
         self.specialist_intro = specialist_intro
+        self.confidence = confidence
+        self.upgraded_category = upgraded_category  # set when mid-convo category switch occurs
+        self.transition_message: str | None = None  # outgoing-agent farewell shown before specialist reply
+
+
+_UPGRADE_TRANSITION_MESSAGES: dict[str, dict[str, str]] = {
+    "kyc_verification": {
+        "en": "For KYC and identity verification questions I'll hand you over to {specialist} — our verification specialist. They'll have our full conversation and can pull up your case directly. One moment! 🪪",
+        "th": "สำหรับเรื่อง KYC และการยืนยันตัวตน ขอส่งต่อให้ {specialist} ผู้เชี่ยวชาญด้านการยืนยันตัวตนของเรานะคะ เขาจะเห็นการสนทนาทั้งหมดและดึงข้อมูลเคสของคุณได้โดยตรงเลยค่ะ รอสักครู่นะคะ 🪪",
+    },
+    "withdrawal_issue": {
+        "en": "Withdrawal questions are best handled by {specialist} — our withdrawal specialist who can trace transactions directly. Passing you over now, they'll have everything we've discussed! 💸",
+        "th": "เรื่องการถอนเงินให้ {specialist} ผู้เชี่ยวชาญด้านการถอนเงินของเราจัดการดีกว่าค่ะ เขาสามารถติดตามธุรกรรมได้โดยตรงเลย กำลังส่งต่อให้เดี๋ยวนี้เลยค่ะ 💸",
+    },
+    "account_restriction": {
+        "en": "Account restriction cases need a senior specialist — let me bring in {specialist} who can investigate and take action on your account directly. They'll be right with you! 🔒",
+        "th": "เคสบัญชีถูกระงับต้องใช้ผู้เชี่ยวชาญอาวุโสค่ะ ขอให้ {specialist} มาช่วยซึ่งสามารถตรวจสอบและดำเนินการกับบัญชีของคุณได้โดยตรงเลยนะคะ 🔒",
+    },
+}
+
+
+# Keywords that signal the user is asking about a specific account domain
+# mid-conversation (e.g. while chatting in "other" category).
+_UPGRADE_KEYWORDS: dict[str, list[str]] = {
+    "kyc_verification":    ["kyc", "verify", "verification", "identity", "id check", "document", "passport",
+                            "selfie", "ยืนยัน", "ตัวตน", "kyc status", "my kyc"],
+    "account_restriction": ["restricted", "suspended", "blocked", "locked", "freeze", "restriction",
+                            "ระงับ", "บล็อก", "account status", "why is my account"],
+    "withdrawal_issue":    ["withdraw", "withdrawal", "transfer out", "stuck withdrawal", "pending withdrawal",
+                            "ถอน", "โอนเงิน", "my withdrawal"],
+}
+
+_UPGRADEABLE_FROM = {"other"}  # only upgrade when current category is one of these
+
+
+def _detect_upgrade(message: str, current_category: str | None) -> str | None:
+    """
+    If the user is in a generic category and their message clearly signals a specific
+    account domain, return the target category key. Otherwise return None.
+    """
+    if current_category not in _UPGRADEABLE_FROM:
+        return None
+    msg = message.lower()
+    for category, keywords in _UPGRADE_KEYWORDS.items():
+        if any(kw in msg for kw in keywords):
+            return category
+    return None
 
 
 def chat(
@@ -87,7 +135,33 @@ def chat(
                else "ไม่สามารถให้คำแนะนำการลงทุนหรือทางการเงินได้ สำหรับการตัดสินใจซื้อขาย กรุณาปรึกษาที่ปรึกษาทางการเงินที่มีคุณสมบัติ")
         return AgentResponse(text=msg, language=language)
 
-    # 3. Check explicit escalation request before calling API
+    # 3a. Mid-conversation category upgrade detection
+    # If the user is in "other" but asks about KYC / withdrawals / account restrictions,
+    # transparently re-route to the dedicated specialist agent for that category.
+    upgrade = _detect_upgrade(user_message, category)
+    if upgrade:
+        from engine.mock_agents import pick_agent as _pick_agent
+        specialist = _pick_agent(upgrade)
+        # Re-run with the upgraded category so tools & overlay are applied correctly
+        upgraded_result = chat(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            user_message=user_message,
+            platform=platform,
+            consecutive_low_confidence=consecutive_low_confidence,
+            category=upgrade,
+        )
+        upgraded_result.upgraded_category = upgrade
+        upgraded_result.agent_name = specialist["name"]
+        upgraded_result.agent_avatar = specialist["avatar"]
+        upgraded_result.agent_avatar_url = specialist["avatar_url"]
+        # Build the handoff notice from the current (outgoing) agent — category-specific
+        _transition_templates = _UPGRADE_TRANSITION_MESSAGES.get(upgrade, {})
+        _transition_template = _transition_templates.get(language) or _transition_templates.get("en", "Let me connect you with {specialist} who can help with this directly!")
+        upgraded_result.transition_message = _transition_template.format(specialist=specialist["name"])
+        return upgraded_result
+
+    # 3b. Check explicit escalation request before calling API
     escalate, reason = should_escalate(user_message, 1.0, consecutive_low_confidence)
     if escalate and reason == "user_requested_human":
         ticket_id = get_ticket_id_by_conversation(conversation_id)
@@ -119,10 +193,43 @@ def chat(
         )
 
     # 7. Call Gemini Flash with account tools
-    tools = [genai_types.Tool(function_declarations=TOOL_DEFINITIONS)]
+    # For categories that require live account data, force a tool call on the first turn
+    # so Gemini cannot reply with a holding message before fetching the user's data.
+    # "other" category: never call account tools — answer from RAG only.
+    _FORCE_TOOL_CATEGORIES = {"kyc_verification", "account_restriction", "withdrawal_issue"}
+    _FORCE_TOOL_NAMES = {
+        "kyc_verification": "get_user_profile",
+        "account_restriction": "get_account_restrictions",
+        "withdrawal_issue": "get_withdrawal_status",
+    }
+    # Force tool call if the category requires account data AND no successful (non-escalated)
+    # bot reply exists yet. This handles retries where the first turn escalated before
+    # the tool could answer — without this, Gemini skips the tool and gives a holding message.
+    from db.conversation_store import has_successful_bot_reply
+    prior_successful_reply = has_successful_bot_reply(conversation_id) if history else False
+    force_tool_name = (
+        _FORCE_TOOL_NAMES.get(category)
+        if category in _FORCE_TOOL_CATEGORIES and not prior_successful_reply
+        else None
+    )
+
+    # For "other" category, omit account tools entirely so Gemini cannot call them.
+    is_other_category = category == "other"
+    tools = [] if is_other_category else [genai_types.Tool(function_declarations=TOOL_DEFINITIONS)]
+    tool_config = (
+        genai_types.ToolConfig(
+            function_calling_config=genai_types.FunctionCallingConfig(
+                mode="ANY",
+                allowed_function_names=[force_tool_name],
+            )
+        )
+        if force_tool_name
+        else None
+    )
     config = genai_types.GenerateContentConfig(
         system_instruction=system_prompt,
-        tools=tools,
+        **({"tools": tools} if tools else {}),
+        **({"tool_config": tool_config} if tool_config else {}),
         max_output_tokens=MAX_TOKENS,
     )
 
@@ -144,12 +251,22 @@ def chat(
     # 8. Handle function calls (account data lookups)
     account_data = {}
 
+    # After a forced tool call the tool_config must be cleared so the follow-up
+    # generate call can return a normal text response.
+    free_config = genai_types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        **({"tools": tools} if tools else {}),
+        max_output_tokens=MAX_TOKENS,
+    )
+
     while True:
-        fn_calls = [
-            part.function_call
-            for part in final_response.candidates[0].content.parts
-            if part.function_call
-        ]
+        candidate = (
+            final_response.candidates[0]
+            if final_response.candidates
+            else None
+        )
+        parts = (candidate.content.parts if candidate and candidate.content else None) or []
+        fn_calls = [part.function_call for part in parts if part.function_call]
         if not fn_calls:
             break
 
@@ -174,12 +291,13 @@ def chat(
             break
 
         gemini_messages = gemini_messages + [
-            final_response.candidates[0].content,
+            candidate.content,
             genai_types.Content(role="user", parts=fn_response_parts),
         ]
         try:
+            # Use free_config (no forced tool) so Gemini can now reply with text
             final_response = client.models.generate_content(
-                model=MODEL, contents=gemini_messages, config=config
+                model=MODEL, contents=gemini_messages, config=free_config
             )
         except genai_errors.APIError as e:
             import logging
@@ -191,7 +309,9 @@ def chat(
 
     # 9. Extract and parse Gemini's JSON response
     raw_text = ""
-    for part in final_response.candidates[0].content.parts:
+    final_candidate = final_response.candidates[0] if final_response.candidates else None
+    final_parts = (final_candidate.content.parts if final_candidate and final_candidate.content else None) or []
+    for part in final_parts:
         if hasattr(part, "text") and part.text:
             raw_text += part.text
 
@@ -218,7 +338,7 @@ def chat(
             escalation_reason=reason, ticket_id=ticket_id,
         )
 
-    return AgentResponse(text=response_text, language=language, resolved=resolved)
+    return AgentResponse(text=response_text, language=language, resolved=resolved, confidence=confidence)
 
 
 def _parse_gemini_response(raw: str, language: str) -> tuple[str, float, bool, bool]:
@@ -231,20 +351,36 @@ def _parse_gemini_response(raw: str, language: str) -> tuple[str, float, bool, b
         return UNABLE_TO_HELP_MESSAGES.get(language, UNABLE_TO_HELP_MESSAGES["en"]), 0.0, True, False
 
     # Strip markdown code fences if present
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+    cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw.strip())
 
-    try:
-        data = json.loads(cleaned)
+    def _try_parse(text: str):
+        data = json.loads(text)
         response_text = str(data.get("response", "")).strip()
-        confidence = float(data.get("confidence", 0.5))
+        confidence = float(data.get("confidence", ESCALATION_CONFIDENCE_THRESHOLD))
         needs_human = bool(data.get("needs_human", False))
         resolved = bool(data.get("resolved", False))
         if not response_text:
             response_text = UNABLE_TO_HELP_MESSAGES.get(language, UNABLE_TO_HELP_MESSAGES["en"])
             needs_human = True
         return response_text, confidence, needs_human, resolved
+
+    # 1. Try the whole cleaned string as JSON
+    try:
+        return _try_parse(cleaned)
     except (json.JSONDecodeError, ValueError, TypeError):
-        # Gemini didn't return valid JSON — treat raw text as response, flag low confidence
-        # Do NOT set needs_human=True here; let the confidence threshold handle escalation
-        # to avoid prematurely escalating on the next user message.
-        return raw.strip(), 0.4, False, False
+        pass
+
+    # 2. Gemini sometimes outputs prose then JSON — find the first { ... } block
+    match = re.search(r'\{[^{}]*"response"[^{}]*\}', cleaned, re.DOTALL)
+    if match:
+        try:
+            return _try_parse(match.group(0))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+    # 3. Last resort: strip any trailing JSON-looking block and use the prose
+    prose = re.sub(r'\{[\s\S]*\}', '', cleaned).strip()
+    if prose:
+        return prose, 0.7, False, False
+
+    return UNABLE_TO_HELP_MESSAGES.get(language, UNABLE_TO_HELP_MESSAGES["en"]), 0.0, True, False

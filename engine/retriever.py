@@ -8,8 +8,8 @@ from config.settings import MAX_RAG_CHUNKS
 
 logger = logging.getLogger(__name__)
 
-# Gemini text-embedding-004 cosine distances: <0.4 = strong match, <0.7 = relevant
-_DISTANCE_THRESHOLD = 0.7
+# Gemini embedding-001 cosine distances: <0.35 = strong match, <0.55 = relevant
+_DISTANCE_THRESHOLD = 0.55
 
 
 def retrieve(user_message: str, n: int = MAX_RAG_CHUNKS) -> list[dict]:

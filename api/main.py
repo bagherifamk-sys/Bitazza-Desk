@@ -10,6 +10,7 @@ from api.routes.auth import router as auth_router
 from api.routes.chat import router as chat_router
 from api.routes.copilot import router as copilot_router
 from api.routes.dashboard import router as dashboard_router
+from api.routes.knowledge import router as knowledge_router
 from db.conversation_store import init_db
 from engine.auto_transitions import start_auto_transition_loop
 
@@ -40,6 +41,7 @@ app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(copilot_router)
 app.include_router(dashboard_router)
+app.include_router(knowledge_router)
 
 # Mount mock User/KYC API and token issuer only in development
 if settings.USE_MOCK_USER_API:
@@ -50,6 +52,10 @@ if settings.USE_MOCK_USER_API:
 
 _assets_dir = Path(__file__).parent.parent / "engine" / "assets"
 app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+_uploads_dir = Path(__file__).parent.parent / "uploads"
+_uploads_dir.mkdir(exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=_uploads_dir), name="uploads")
 
 
 @app.get("/health")

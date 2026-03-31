@@ -247,6 +247,55 @@ def get_history(conversation_id: str, limit: int = 10) -> list[dict]:
     return result
 
 
+def has_successful_bot_reply(conversation_id: str) -> bool:
+    """
+    Returns True if at least one bot message in this conversation was NOT an escalation.
+    Used to decide whether to force a tool call again on retry turns.
+    """
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT metadata FROM messages
+            WHERE ticket_id = %s AND sender_type = 'bot'
+            ORDER BY created_at ASC
+        """, (conversation_id,))
+        rows = cur.fetchall()
+    for r in rows:
+        raw = r["metadata"]
+        meta = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+        if not meta.get("escalated", False):
+            return True
+    return False
+
+
+def count_consecutive_low_confidence(conversation_id: str) -> int:
+    """
+    Count consecutive recent bot messages with confidence < threshold.
+    Computed server-side from message metadata so the client cannot spoof it.
+    """
+    from config.settings import ESCALATION_CONFIDENCE_THRESHOLD
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT metadata
+            FROM messages
+            WHERE ticket_id = %s AND sender_type = 'bot'
+            ORDER BY created_at DESC
+            LIMIT 10
+        """, (conversation_id,))
+        rows = cur.fetchall()
+    count = 0
+    for r in rows:
+        raw = r["metadata"]
+        meta = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+        confidence = meta.get("confidence")
+        if confidence is not None and float(confidence) < ESCALATION_CONFIDENCE_THRESHOLD:
+            count += 1
+        else:
+            break
+    return count
+
+
 # ── Tickets ───────────────────────────────────────────────────────────────────
 
 def create_ticket(conversation_id: str, escalation_reason: str) -> str:
@@ -441,10 +490,16 @@ def get_conversation_with_history(conversation_id: str) -> dict | None:
     return result
 
 
-def get_open_tickets() -> list[dict]:
+_VALID_STATUSES = {
+    'Open_Live', 'In_Progress', 'Pending_Customer',
+    'Escalated', 'Closed_Resolved', 'Closed_Unresponsive', 'Orphaned',
+}
+
+
+def get_open_tickets(search: str = "", status_filter: str = "all") -> list[dict]:
     with _conn() as conn:
         cur = conn.cursor()
-        cur.execute("""
+        base_query = """
             SELECT
                 t.id,
                 t.status,
@@ -466,9 +521,28 @@ def get_open_tickets() -> list[dict]:
                 c.external_id AS cust_external_id
             FROM tickets t
             JOIN customers c ON t.customer_id = c.id
-            WHERE t.status NOT IN ('Closed_Resolved', 'Closed_Unresponsive')
-            ORDER BY t.priority ASC, t.updated_at DESC
-        """)
+            WHERE 1=1
+        """
+        params: list = []
+        if status_filter in _VALID_STATUSES:
+            base_query += " AND t.status = %s"
+            params.append(status_filter)
+        else:
+            # default: hide closed tickets (legacy "all_open" behaviour)
+            base_query += " AND t.status NOT IN ('Closed_Resolved', 'Closed_Unresponsive')"
+        if search:
+            term = f"%{search.lower()}%"
+            base_query += """
+            AND (
+                LOWER(t.id::text) LIKE %s
+                OR LOWER(c.name) LIKE %s
+                OR LOWER(c.email) LIKE %s
+                OR LOWER(c.external_id) LIKE %s
+            )
+            """
+            params = [term, term, term, term]
+        base_query += " ORDER BY t.priority ASC, t.updated_at DESC"
+        cur.execute(base_query, params)
         rows = cur.fetchall()
 
     result = []
@@ -486,7 +560,7 @@ def get_open_tickets() -> list[dict]:
             "updated_at":       ticket["updated_at"],
             "last_message":     ticket["last_message"],
             "last_message_at":  ticket["last_message_at"],
-            "tags":             [],
+            "tags":             get_tags_for_ticket(ticket["id"]),
             "customer": {
                 "id":          ticket["cust_id"],
                 "user_id":     ticket["cust_external_id"] or ticket["cust_id"],
@@ -502,6 +576,65 @@ def get_open_tickets() -> list[dict]:
 
 def get_ticket_with_history(ticket_id: str) -> dict | None:
     return get_conversation_with_history(ticket_id)
+
+
+# ── Tags ──────────────────────────────────────────────────────────────────────
+
+def get_all_tags() -> list[str]:
+    """Return all tag names in alphabetical order."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM tags ORDER BY name")
+        return [r["name"] for r in cur.fetchall()]
+
+
+def create_tag(name: str) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO tags (id, name) VALUES (gen_random_uuid(), %s) ON CONFLICT (name) DO NOTHING",
+            (name,)
+        )
+
+
+def delete_tag(name: str) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM tags WHERE name = %s", (name,))
+
+
+def get_tags_for_ticket(ticket_id: str) -> list[str]:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT t.name FROM tags t
+            JOIN ticket_tags tt ON tt.tag_id = t.id
+            WHERE tt.ticket_id = %s
+            ORDER BY t.name
+        """, (ticket_id,))
+        return [r["name"] for r in cur.fetchall()]
+
+
+def set_tags_for_ticket(ticket_id: str, tag_names: list[str]) -> None:
+    """Replace the full tag set for a ticket. Creates new tags on the fly."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        # Ensure all tags exist (tags.id is UUID, use gen_random_uuid())
+        for name in tag_names:
+            cur.execute(
+                "INSERT INTO tags (id, name) VALUES (gen_random_uuid(), %s) ON CONFLICT (name) DO NOTHING",
+                (name,)
+            )
+        # Replace ticket_tags
+        cur.execute("DELETE FROM ticket_tags WHERE ticket_id = %s", (ticket_id,))
+        if tag_names:
+            cur.execute("SELECT id, name FROM tags WHERE name = ANY(%s)", (tag_names,))
+            tag_ids = [r["id"] for r in cur.fetchall()]
+            for tag_id in tag_ids:
+                cur.execute(
+                    "INSERT INTO ticket_tags (ticket_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (ticket_id, tag_id)
+                )
 
 
 # ── Auto-transitions ──────────────────────────────────────────────────────────
@@ -529,3 +662,168 @@ def get_tickets_for_auto_transition() -> dict:
         "snoozed_expired": [],
         "resolved_expired": resolved_expired,
     }
+
+
+# ── Agents (users table) ──────────────────────────────────────────────────────
+
+def get_agents(include_inactive: bool = False) -> list[dict]:
+    with _conn() as conn:
+        cur = conn.cursor()
+        if include_inactive:
+            cur.execute("SELECT id, name, email, role, state, team, active_chats, max_chats, skills, shift, active, avatar_url FROM users ORDER BY name")
+        else:
+            cur.execute("SELECT id, name, email, role, state, team, active_chats, max_chats, skills, shift, active, avatar_url FROM users WHERE active = true ORDER BY name")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_agent(agent_id: str) -> dict | None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, email, role, state, team, active_chats, max_chats, skills, shift, active, avatar_url FROM users WHERE id = %s", (agent_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_agent_by_email(email: str) -> dict | None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, email, role, state, team, active_chats, max_chats, skills, shift, active, avatar_url, password_hash FROM users WHERE email = %s", (email.lower(),))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def create_agent(name: str, email: str, password_hash: str, role: str, team: str = "cs", max_chats: int = 3, skills: list = [], shift: str | None = None) -> dict:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO users (name, email, password_hash, role, team, max_chats, skills, shift)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (name, email.lower(), password_hash, role, team, max_chats, skills, shift)
+        )
+        new_id = cur.fetchone()["id"]
+    return get_agent(str(new_id))
+
+
+def update_agent(agent_id: str, fields: dict) -> dict | None:
+    allowed = {"name", "role", "team", "max_chats", "skills", "shift", "avatar_url"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return get_agent(agent_id)
+    with _conn() as conn:
+        cur = conn.cursor()
+        set_clause = ", ".join(f"{k} = %s" for k in updates)
+        cur.execute(f"UPDATE users SET {set_clause}, updated_at = NOW() WHERE id = %s", (*updates.values(), agent_id))
+    return get_agent(agent_id)
+
+
+def set_agent_active(agent_id: str, active: bool) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET active = %s, updated_at = NOW() WHERE id = %s", (active, agent_id))
+
+
+def set_agent_password(agent_id: str, password_hash: str) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET password_hash = %s, updated_at = NOW() WHERE id = %s", (password_hash, agent_id))
+
+
+def set_agent_state(agent_id: str, state: str) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET state = %s, updated_at = NOW() WHERE id = %s", (state, agent_id))
+
+
+# ── Roles ─────────────────────────────────────────────────────────────────────
+
+def get_roles() -> list[dict]:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT name, display_name, is_preset FROM roles ORDER BY name")
+        roles = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT role_name, permission FROM role_permissions ORDER BY role_name, permission")
+        perms: dict[str, list[str]] = {}
+        for row in cur.fetchall():
+            perms.setdefault(row["role_name"], []).append(row["permission"])
+        for r in roles:
+            r["permissions"] = perms.get(r["name"], [])
+        return roles
+
+
+def create_role(name: str, display_name: str = "", permissions: list = []) -> dict:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO roles (name, display_name) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+            (name, display_name or name)
+        )
+        cur.execute("DELETE FROM role_permissions WHERE role_name = %s", (name,))
+        for perm in permissions:
+            cur.execute("INSERT INTO role_permissions (role_name, permission) VALUES (%s, %s) ON CONFLICT DO NOTHING", (name, perm))
+    return {"name": name, "display_name": display_name or name, "permissions": permissions}
+
+
+def update_role(name: str, fields: dict) -> dict | None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        if "display_name" in fields:
+            cur.execute("UPDATE roles SET display_name = %s WHERE name = %s", (fields["display_name"], name))
+        if "permissions" in fields:
+            cur.execute("DELETE FROM role_permissions WHERE role_name = %s", (name,))
+            for perm in fields["permissions"]:
+                cur.execute("INSERT INTO role_permissions (role_name, permission) VALUES (%s, %s) ON CONFLICT DO NOTHING", (name, perm))
+    roles = get_roles()
+    return next((r for r in roles if r["name"] == name), None)
+
+
+def delete_role(name: str) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM roles WHERE name = %s", (name,))
+
+
+# ── Knowledge Base ─────────────────────────────────────────────────────────────
+
+def create_knowledge_item(title: str, source_type: str, source_ref: str | None, chunk_count: int, created_by: str | None) -> dict:
+    # created_by is a UUID string from the JWT sub claim
+    creator_id = created_by if created_by else None
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO knowledge_items (title, source_type, source_ref, chunk_count, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, title, source_type, source_ref, chunk_count, created_by,
+                      EXTRACT(EPOCH FROM created_at)::bigint AS created_at
+        """, (title, source_type, source_ref, chunk_count, creator_id))
+        return dict(cur.fetchone())
+
+
+def list_knowledge_items() -> list[dict]:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, title, source_type, source_ref, chunk_count, created_by,
+                   EXTRACT(EPOCH FROM created_at)::bigint AS created_at
+            FROM knowledge_items
+            ORDER BY created_at DESC
+        """)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_knowledge_item(item_id: int) -> dict | None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, title, source_type, source_ref, chunk_count, created_by,
+                   EXTRACT(EPOCH FROM created_at)::bigint AS created_at
+            FROM knowledge_items WHERE id = %s
+        """, (item_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def delete_knowledge_item(item_id: int) -> bool:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM knowledge_items WHERE id = %s", (item_id,))
+        return cur.rowcount > 0

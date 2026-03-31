@@ -1,14 +1,25 @@
 """CS Dashboard API routes — internal agent-facing endpoints."""
 import time
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+import uuid
+import shutil
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional
+
+UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads" / "avatars"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 from api.middleware.auth import get_user_id
 from db.conversation_store import (
     get_open_tickets, get_ticket_with_history,
     update_ticket_status, add_message,
     get_all_conversations, get_conversation_with_history,
     transfer_ticket, snooze_ticket, block_ticket, set_pending_internal,
+    get_all_tags, set_tags_for_ticket, create_tag, delete_tag,
+    get_agents as db_get_agents, get_agent, create_agent as db_create_agent,
+    update_agent as db_update_agent, set_agent_active, set_agent_password, set_agent_state,
+    get_roles as db_get_roles, create_role as db_create_role,
+    update_role as db_update_role, delete_role as db_delete_role,
 )
 from api.ws_manager import manager
 from api.copilot import suggest_reply, summarize_conversation, classify_sentiment, find_related_tickets
@@ -155,8 +166,8 @@ async def reply_to_conversation(conversation_id: str, body: ReplyRequest, user_i
 # ---------------------------------------------------------------------------
 
 @router.get("/tickets")
-def list_tickets(user_id: str = Depends(get_user_id)):
-    return {"tickets": get_open_tickets()}
+def list_tickets(search: str = "", status_filter: str = "all", user_id: str = Depends(get_user_id)):
+    return {"tickets": get_open_tickets(search=search, status_filter=status_filter)}
 
 
 @router.get("/tickets/{ticket_id}")
@@ -203,6 +214,55 @@ async def reply_to_ticket(ticket_id: str, body: ReplyRequest, user_id: str = Dep
             "mentions": [],
         },
     }, dashboard_only=body.is_internal_note)
+    return {"status": "sent"}
+
+
+class MessagesRequest(BaseModel):
+    content: str
+    is_note: bool = False
+    channel: Optional[str] = None
+
+
+@router.post("/tickets/{ticket_id}/messages")
+async def post_ticket_message(ticket_id: str, body: MessagesRequest, user_id: str = Depends(get_user_id)):
+    """Alias used by the dashboard inbox composer (content/is_note/channel field names)."""
+    ticket = get_ticket_with_history(ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    agent_info = USERS_BY_ID.get(user_id)
+    agent_display_name = agent_info["name"] if agent_info else user_id
+    agent_avatar_url = agent_info.get("avatar_url") if agent_info else None
+    sender_type = "internal_note" if body.is_note else "agent"
+    mid = add_message(
+        conversation_id=ticket_id,
+        role=sender_type,
+        content=body.content,
+        metadata={
+            "agent_id": user_id,
+            "agent_name": agent_display_name,
+            "agent_avatar_url": agent_avatar_url,
+            "is_internal_note": body.is_note,
+            "channel": body.channel,
+        },
+    )
+    if not body.is_note:
+        update_ticket_status(ticket_id, "in_progress", agent_id=user_id)
+    await manager.broadcast(ticket_id, {
+        "type": "new_message",
+        "conversation_id": ticket_id,
+        "message": {
+            "id": mid,
+            "role": sender_type,
+            "sender_type": sender_type,
+            "content": body.content,
+            "agent_name": agent_display_name,
+            "agent_avatar": agent_display_name[0].upper(),
+            "agent_avatar_url": agent_avatar_url,
+            "created_at": int(time.time()),
+            "is_internal_note": body.is_note,
+            "mentions": [],
+        },
+    }, dashboard_only=body.is_note)
     return {"status": "sent"}
 
 
@@ -260,7 +320,7 @@ async def assign_ticket(ticket_id: str, body: AssignRequest, user_id: str = Depe
 
 @router.patch("/tickets/{ticket_id}/tags")
 def update_tags(ticket_id: str, body: TagsRequest, user_id: str = Depends(get_user_id)):
-    # Stub — add tags column to tickets table when ready
+    set_tags_for_ticket(ticket_id, body.tags)
     return {"tags": body.tags}
 
 
@@ -351,18 +411,116 @@ async def bulk_action(body: BulkActionRequest, user_id: str = Depends(get_user_i
 # Agents
 # ---------------------------------------------------------------------------
 
-@router.get("/agents/availability")
-def get_agents(user_id: str = Depends(get_user_id)):
-    return {"agents": MOCK_AGENTS}
+@router.get("/agents")
+def get_agents_list(include_inactive: bool = False, user_id: str = Depends(get_user_id)):
+    return db_get_agents(include_inactive=include_inactive)
 
+@router.post("/agents")
+def create_agent_route(data: dict, user_id: str = Depends(get_user_id)):
+    import bcrypt
+    password = data.get("password", "")
+    if not password:
+        raise HTTPException(status_code=400, detail="password required")
+    pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    agent = db_create_agent(
+        name=data["name"], email=data["email"], password_hash=pw_hash,
+        role=data.get("role", "agent"), team=data.get("team", "cs"),
+        max_chats=data.get("max_chats", 3), skills=data.get("skills", []),
+        shift=data.get("shift"),
+    )
+    return agent
 
 @router.patch("/agents/me/status")
 def set_my_status(body: AgentStatusRequest, user_id: str = Depends(get_user_id)):
-    valid = {"available", "busy", "away", "break", "after_call_work", "offline"}
-    if body.status not in valid:
+    valid = {"Available", "Busy", "Break", "Offline"}
+    state = body.status.capitalize() if body.status.lower() in {v.lower() for v in valid} else None
+    if not state:
         raise HTTPException(status_code=400, detail=f"status must be one of {valid}")
-    # Stub — update real agent record when agents table exists
-    return {"status": body.status}
+    set_agent_state(user_id, state)
+    return {"status": state}
+
+@router.patch("/agents/{agent_id}")
+def update_agent_route(agent_id: str, data: dict, user_id: str = Depends(get_user_id)):
+    agent = db_update_agent(agent_id, data)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+@router.delete("/agents/{agent_id}")
+def deactivate_agent(agent_id: str, user_id: str = Depends(get_user_id)):
+    set_agent_active(agent_id, False)
+    return {"status": "deactivated"}
+
+@router.post("/agents/{agent_id}/reactivate")
+def reactivate_agent(agent_id: str, user_id: str = Depends(get_user_id)):
+    set_agent_active(agent_id, True)
+    return {"status": "reactivated"}
+
+@router.post("/agents/{agent_id}/reset-password")
+def reset_agent_password(agent_id: str, data: dict, user_id: str = Depends(get_user_id)):
+    import bcrypt
+    password = data.get("password", "")
+    if not password:
+        raise HTTPException(status_code=400, detail="password required")
+    pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    set_agent_password(agent_id, pw_hash)
+    return {"status": "password updated"}
+
+@router.post("/agents/{agent_id}/avatar")
+async def upload_agent_avatar(agent_id: str, avatar: UploadFile = File(...), user_id: str = Depends(get_user_id)):
+    allowed = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+    if avatar.content_type not in allowed:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, GIF, or WebP images are allowed")
+    ext = Path(avatar.filename or "avatar.png").suffix or ".png"
+    filename = f"{agent_id}_{int(time.time() * 1000)}{ext}"
+    dest = UPLOADS_DIR / filename
+    with dest.open("wb") as f:
+        shutil.copyfileobj(avatar.file, f)
+    avatar_url = f"/uploads/avatars/{filename}"
+    agent = db_update_agent(agent_id, {"avatar_url": avatar_url})
+    if not agent:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"avatar_url": avatar_url}
+
+@router.get("/agents/availability")
+def get_agents_availability(user_id: str = Depends(get_user_id)):
+    return {"agents": db_get_agents()}
+
+
+# ---------------------------------------------------------------------------
+# Roles
+# ---------------------------------------------------------------------------
+
+ALL_PERMISSIONS = [
+    "section.home", "section.inbox", "section.supervisor", "section.analytics",
+    "section.metrics", "section.admin", "section.studio",
+    "inbox.reply", "inbox.assign", "inbox.close", "inbox.claim",
+    "inbox.escalate", "inbox.internal_note",
+    "supervisor.whisper",
+    "studio.publish",
+    "admin.agents", "admin.roles", "admin.settings",
+]
+
+@router.get("/roles")
+def get_roles(user_id: str = Depends(get_user_id)):
+    return {"roles": db_get_roles(), "all_permissions": ALL_PERMISSIONS}
+
+@router.post("/roles")
+def create_role(data: dict, user_id: str = Depends(get_user_id)):
+    return db_create_role(name=data["name"], display_name=data.get("display_name", ""), permissions=data.get("permissions", []))
+
+@router.patch("/roles/{name}")
+def update_role(name: str, data: dict, user_id: str = Depends(get_user_id)):
+    role = db_update_role(name, data)
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    return role
+
+@router.delete("/roles/{name}")
+def delete_role(name: str, user_id: str = Depends(get_user_id)):
+    db_delete_role(name)
+    return {"status": "deleted"}
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +532,7 @@ def supervisor_live(user_id: str = Depends(get_user_id)):
     tickets = get_open_tickets()
     now = int(time.time())
     return {
-        "agents": MOCK_AGENTS,
+        "agents": db_get_agents(),
         "queue": [
             {"channel": "web", "priority": "high", "count": len([t for t in tickets if t.get("status") not in ("resolved", "closed", "spam")])},
         ],
@@ -403,13 +561,313 @@ def analytics(
     category: Optional[str] = None,
     user_id: str = Depends(get_user_id),
 ):
-    # Stub — wire up real aggregation queries when schema is extended
+    from db.conversation_store import _conn
+    days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}.get(date_range, 7)
+    with _conn() as conn:
+        cur = conn.cursor()
+        filters = []
+        params: list = [days]
+        if channel:   filters.append("AND t.channel = %s"); params.append(channel)
+        if agent_id:  filters.append("AND t.assigned_to = %s::uuid"); params.append(agent_id)
+        if category:  filters.append("AND t.category = %s"); params.append(category)
+        f = " ".join(filters)
+
+        cur.execute(f"""
+            SELECT COUNT(*) as total,
+                   COUNT(*) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresolved')) as resolved
+            FROM tickets t
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+        """, params)
+        totals = cur.fetchone()
+
+        cur.execute(f"""
+            SELECT t.channel, COUNT(*) as count
+            FROM tickets t
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY t.channel ORDER BY count DESC
+        """, params)
+        by_channel = [{"channel": r["channel"], "count": r["count"]} for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT DATE(t.created_at) as date, COUNT(*) as count
+            FROM tickets t
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY DATE(t.created_at) ORDER BY date
+        """, params)
+        by_day = [{"date": str(r["date"]), "count": r["count"]} for r in cur.fetchall()]
+
+        # First response time (time from ticket creation to first agent/bot reply)
+        cur.execute(f"""
+            SELECT AVG(EXTRACT(EPOCH FROM (m.created_at - t.created_at))) as avg_frt,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (m.created_at - t.created_at))) as median_frt,
+                   PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (m.created_at - t.created_at))) as p90_frt
+            FROM tickets t
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE ticket_id = t.id AND sender_type IN ('agent','bot')
+                ORDER BY created_at LIMIT 1
+            ) m ON true
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+        """, params)
+        frt = cur.fetchone()
+
+        cur.execute(f"""
+            SELECT DATE(t.created_at) as date,
+                   AVG(EXTRACT(EPOCH FROM (m.created_at - t.created_at))) as avg_s
+            FROM tickets t
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE ticket_id = t.id AND sender_type IN ('agent','bot')
+                ORDER BY created_at LIMIT 1
+            ) m ON true
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY DATE(t.created_at) ORDER BY date
+        """, params)
+        frt_by_day = [{"date": str(r["date"]), "avg_s": round(r["avg_s"] or 0)} for r in cur.fetchall()]
+
+        # Resolution time
+        cur.execute(f"""
+            SELECT t.channel,
+                   AVG(EXTRACT(EPOCH FROM (t.updated_at - t.created_at))) as avg_s
+            FROM tickets t
+            WHERE t.status IN ('Closed_Resolved','Closed_Unresolved')
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY t.channel
+        """, params)
+        res_by_channel = [{"channel": r["channel"], "avg_s": round(r["avg_s"] or 0)} for r in cur.fetchall()]
+
+        # Bot vs human
+        cur.execute(f"""
+            SELECT
+                COUNT(*) FILTER (WHERE t.category = 'ai_handling') as bot_count,
+                COUNT(*) as total_count
+            FROM tickets t
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+        """, params)
+        bot_row = cur.fetchone()
+        total_c = bot_row["total_count"] or 1
+        bot_c = bot_row["bot_count"] or 0
+
+        cur.execute(f"""
+            SELECT DATE(t.created_at) as date,
+                   COUNT(*) FILTER (WHERE t.category = 'ai_handling') as bot,
+                   COUNT(*) FILTER (WHERE t.category != 'ai_handling') as human
+            FROM tickets t
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY DATE(t.created_at) ORDER BY date
+        """, params)
+        bot_by_day = [{"date": str(r["date"]), "bot": r["bot"], "human": r["human"]} for r in cur.fetchall()]
+
+        # CSAT
+        cur.execute(f"""
+            SELECT AVG(t.csat_score) as avg,
+                   COUNT(t.csat_score) as count
+            FROM tickets t
+            WHERE t.csat_score IS NOT NULL
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+        """, params)
+        csat_row = cur.fetchone()
+
+        cur.execute(f"""
+            SELECT u.name, AVG(t.csat_score) as avg, COUNT(t.csat_score) as count
+            FROM tickets t JOIN users u ON t.assigned_to = u.id
+            WHERE t.csat_score IS NOT NULL
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY u.name ORDER BY avg DESC
+        """, params)
+        csat_by_agent = [{"name": r["name"], "avg": round(float(r["avg"]), 2), "count": r["count"]} for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT DATE(t.created_at) as date, AVG(t.csat_score) as avg
+            FROM tickets t
+            WHERE t.csat_score IS NOT NULL
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY DATE(t.created_at) ORDER BY date
+        """, params)
+        csat_trend = [{"date": str(r["date"]), "avg": round(float(r["avg"]), 2)} for r in cur.fetchall()]
+
     return {
-        "volume": {"total": 0, "by_channel": {}, "by_day": []},
-        "response_time": {"avg": 0, "median": 0, "p90": 0},
-        "resolution_time": {"avg": 0, "by_category": {}},
-        "bot_performance": {"resolution_rate": 0.0, "handoff_rate": 0.0, "top_intents": []},
-        "csat": {"avg": None, "by_agent": [], "trend": []},
+        "volume": {
+            "total": totals["total"],
+            "resolved": totals["resolved"],
+            "by_channel": by_channel,
+            "by_day": by_day,
+        },
+        "response_time": {
+            "avg": round(float(frt["avg_frt"] or 0)),
+            "median": round(float(frt["median_frt"] or 0)),
+            "p90": round(float(frt["p90_frt"] or 0)),
+            "by_day": frt_by_day,
+        },
+        "resolution": {
+            "by_channel": res_by_channel,
+        },
+        "bot_performance": {
+            "resolution_rate": round(bot_c / total_c, 3),
+            "handoff_rate": round(1 - bot_c / total_c, 3),
+            "by_day": bot_by_day,
+        },
+        "csat": {
+            "avg": round(float(csat_row["avg"]), 2) if csat_row["avg"] else None,
+            "count": csat_row["count"],
+            "by_agent": csat_by_agent,
+            "trend": csat_trend,
+        },
+    }
+
+
+@router.get("/metrics")
+def metrics(
+    range: str = "7d",
+    channel: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    user_id: str = Depends(get_user_id),
+):
+    from db.conversation_store import _conn
+    days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}.get(range, 7)
+    with _conn() as conn:
+        cur = conn.cursor()
+        filters = []
+        params: list = [days]
+        if channel:  filters.append("AND t.channel = %s"); params.append(channel)
+        if agent_id: filters.append("AND t.assigned_to = %s::uuid"); params.append(agent_id)
+        f = " ".join(filters)
+
+        # FRT avg + by agent + over time
+        cur.execute(f"""
+            SELECT AVG(EXTRACT(EPOCH FROM (m.created_at - t.created_at))) as avg_s
+            FROM tickets t
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE ticket_id = t.id AND sender_type IN ('agent','bot')
+                ORDER BY created_at LIMIT 1
+            ) m ON true
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+        """, params)
+        frt_avg = cur.fetchone()["avg_s"] or 0
+
+        cur.execute(f"""
+            SELECT u.name,
+                   AVG(EXTRACT(EPOCH FROM (m.created_at - t.created_at))) as avg_s
+            FROM tickets t
+            JOIN users u ON t.assigned_to = u.id
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE ticket_id = t.id AND sender_type = 'agent'
+                ORDER BY created_at LIMIT 1
+            ) m ON true
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY u.name ORDER BY avg_s
+        """, params)
+        frt_by_agent = [{"name": r["name"], "avg_s": round(r["avg_s"] or 0)} for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT DATE(t.created_at) as date,
+                   AVG(EXTRACT(EPOCH FROM (m.created_at - t.created_at))) as avg_s
+            FROM tickets t
+            JOIN LATERAL (
+                SELECT created_at FROM messages
+                WHERE ticket_id = t.id AND sender_type IN ('agent','bot')
+                ORDER BY created_at LIMIT 1
+            ) m ON true
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY DATE(t.created_at) ORDER BY date
+        """, params)
+        frt_over_time = [{"date": str(r["date"]), "avg_s": round(r["avg_s"] or 0)} for r in cur.fetchall()]
+
+        # AHT (avg handle time = resolution time for closed tickets)
+        cur.execute(f"""
+            SELECT AVG(EXTRACT(EPOCH FROM (t.updated_at - t.created_at))) as avg_s
+            FROM tickets t
+            WHERE t.status IN ('Closed_Resolved','Closed_Unresolved')
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+        """, params)
+        aht_avg = cur.fetchone()["avg_s"] or 0
+
+        cur.execute(f"""
+            SELECT t.channel,
+                   AVG(EXTRACT(EPOCH FROM (t.updated_at - t.created_at))) as avg_s
+            FROM tickets t
+            WHERE t.status IN ('Closed_Resolved','Closed_Unresolved')
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY t.channel
+        """, params)
+        aht_by_channel = [{"channel": r["channel"], "avg_s": round(r["avg_s"] or 0)} for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT DATE(t.created_at) as date,
+                   AVG(EXTRACT(EPOCH FROM (t.updated_at - t.created_at))) as avg_s
+            FROM tickets t
+            WHERE t.status IN ('Closed_Resolved','Closed_Unresolved')
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY DATE(t.created_at) ORDER BY date
+        """, params)
+        aht_over_time = [{"date": str(r["date"]), "avg_s": round(r["avg_s"] or 0)} for r in cur.fetchall()]
+
+        # CSAT
+        cur.execute(f"""
+            SELECT AVG(t.csat_score) as avg, COUNT(t.csat_score) as count
+            FROM tickets t
+            WHERE t.csat_score IS NOT NULL
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+        """, params)
+        csat_row = cur.fetchone()
+
+        cur.execute(f"""
+            SELECT t.csat_score as score, COUNT(*) as count
+            FROM tickets t
+            WHERE t.csat_score IS NOT NULL
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY t.csat_score ORDER BY t.csat_score
+        """, params)
+        csat_dist = [{"score": r["score"], "count": r["count"]} for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT u.name, AVG(t.csat_score) as avg, COUNT(t.csat_score) as count
+            FROM tickets t JOIN users u ON t.assigned_to = u.id
+            WHERE t.csat_score IS NOT NULL
+              AND t.created_at >= NOW() - (%s || ' days')::interval {f}
+            GROUP BY u.name ORDER BY avg DESC
+        """, params)
+        csat_by_agent = [{"name": r["name"], "avg": round(float(r["avg"]), 2), "count": r["count"]} for r in cur.fetchall()]
+
+        # Summary
+        cur.execute(f"""
+            SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresolved')) as resolved,
+                COUNT(*) FILTER (WHERE status = 'escalated') as escalated,
+                COUNT(*) FILTER (WHERE sla_breached = true) as sla_breached
+            FROM tickets t
+            WHERE t.created_at >= NOW() - (%s || ' days')::interval {f}
+        """, params)
+        summary = cur.fetchone()
+        total = summary["total"] or 1
+
+    return {
+        "frt": {
+            "avg_s": round(float(frt_avg)),
+            "by_agent": frt_by_agent,
+            "over_time": frt_over_time,
+        },
+        "aht": {
+            "avg_s": round(float(aht_avg)),
+            "by_channel": aht_by_channel,
+            "over_time": aht_over_time,
+        },
+        "csat": {
+            "avg": round(float(csat_row["avg"]), 2) if csat_row["avg"] else None,
+            "count": csat_row["count"],
+            "distribution": csat_dist,
+            "by_agent": csat_by_agent,
+        },
+        "summary": {
+            "total_tickets": summary["total"],
+            "resolved": summary["resolved"],
+            "escalated": summary["escalated"],
+            "sla_breached": summary["sla_breached"],
+            "resolution_rate": round(summary["resolved"] / total, 3),
+        },
     }
 
 
@@ -419,7 +877,7 @@ def analytics(
 
 @router.get("/canned-responses")
 def list_canned_responses(user_id: str = Depends(get_user_id)):
-    return {"canned_responses": MOCK_CANNED_RESPONSES}
+    return MOCK_CANNED_RESPONSES
 
 
 @router.post("/canned-responses")
@@ -436,7 +894,24 @@ def create_canned_response(body: CannedResponseCreate, user_id: str = Depends(ge
 
 @router.get("/tags")
 def list_tags(user_id: str = Depends(get_user_id)):
-    return {"tags": MOCK_TAGS}
+    return {"tags": get_all_tags()}
+
+
+class CreateTagRequest(BaseModel):
+    name: str
+
+@router.post("/tags")
+def add_tag(body: CreateTagRequest, user_id: str = Depends(get_user_id)):
+    name = body.name.strip().lower().replace(" ", "_")
+    if not name:
+        raise HTTPException(status_code=400, detail="Tag name required")
+    create_tag(name)
+    return {"tags": get_all_tags()}
+
+@router.delete("/tags/{name}")
+def remove_tag(name: str, user_id: str = Depends(get_user_id)):
+    delete_tag(name)
+    return {"tags": get_all_tags()}
 
 
 # ---------------------------------------------------------------------------

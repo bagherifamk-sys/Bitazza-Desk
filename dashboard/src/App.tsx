@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { PermissionProvider } from './PermissionContext';
-import type { Ticket, InboxView, AgentStatus, WSEvent, Role } from './types';
+import type { Ticket, InboxView, StatusFilter, AgentStatus, WSEvent, Role } from './types';
 import { api, createWS } from './api';
 import ConversationList from './components/ConversationList';
 import MessageThread from './components/MessageThread';
@@ -719,13 +719,15 @@ interface WorkspaceProps {
   selectedId: string | null;
   view: InboxView;
   search: string;
+  statusFilter: StatusFilter;
   onSelect: (id: string) => void;
   onViewChange: (v: InboxView) => void;
   onSearchChange: (s: string) => void;
+  onStatusFilterChange: (f: StatusFilter) => void;
   onRefresh: () => void;
 }
 
-function Workspace({ ws, tickets, selectedId, view, search, onSelect, onViewChange, onSearchChange, onRefresh }: WorkspaceProps) {
+function Workspace({ ws, tickets, selectedId, view, search, statusFilter, onSelect, onViewChange, onSearchChange, onStatusFilterChange, onRefresh }: WorkspaceProps) {
   const selectedTicket = tickets.find(t => t.id === selectedId) ?? null;
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
 
@@ -733,8 +735,9 @@ function Workspace({ ws, tickets, selectedId, view, search, onSelect, onViewChan
     <div className="flex flex-1 overflow-hidden">
       <ConversationList
         tickets={tickets} selectedId={selectedId} view={view} search={search}
+        statusFilter={statusFilter}
         onSelect={onSelect} onViewChange={onViewChange}
-        onSearchChange={onSearchChange} onRefresh={onRefresh}
+        onSearchChange={onSearchChange} onStatusFilterChange={onStatusFilterChange} onRefresh={onRefresh}
       />
       <div className="flex-1 overflow-hidden">
         {selectedId
@@ -779,6 +782,7 @@ export default function App() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() => sessionStorage.getItem('selectedId'));
   const [view, setView] = useState<InboxView>(() => (sessionStorage.getItem('inboxView') as InboxView) ?? 'all_open');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => (sessionStorage.getItem('inboxStatusFilter') as StatusFilter) ?? 'all');
   const [search, setSearch] = useState(() => sessionStorage.getItem('inboxSearch') ?? '');
   const [myStatus, setMyStatus] = useState<AgentStatus>('Available');
   const [activeChats, setActiveChats] = useState(0);
@@ -804,14 +808,14 @@ export default function App() {
 
   const loadTickets = async () => {
     try {
-      const data = await api.getTickets(view, search);
+      const data = await api.getTickets(view, search, statusFilter);
       setTickets(data);
       if (!selectedId && data.length > 0) handleSelect(data[0].id);
     } catch { /* backend stub — silent */ }
   };
   loadTicketsRef.current = loadTickets;
 
-  useEffect(() => { if (user) loadTickets(); }, [view, search, user]);
+  useEffect(() => { if (user) loadTickets(); }, [view, search, statusFilter, user]);
 
   useEffect(() => {
     if (!user) return;
@@ -900,6 +904,7 @@ export default function App() {
   const handleSelect = (id: string) => { sessionStorage.setItem('selectedId', id); setSelectedId(id); };
   const handleSelectAndNavigate = (id: string) => { handleSelect(id); navigate('/inbox'); };
   const handleViewChange = (v: InboxView) => { sessionStorage.setItem('inboxView', v); setView(v); };
+  const handleStatusFilterChange = (f: StatusFilter) => { sessionStorage.setItem('inboxStatusFilter', f); setStatusFilter(f); };
   const handleSearchChange = (s: string) => { sessionStorage.setItem('inboxSearch', s); setSearch(s); };
   const handleLogin = (u: AuthUser) => { setAuthUser(u); setUser(u); };
   const handleLogout = () => { setAuthUser(null); setUser(null); sessionStorage.clear(); };
@@ -943,8 +948,9 @@ export default function App() {
                 <Workspace
                   ws={wsSocket}
                   tickets={tickets} selectedId={selectedId} view={view} search={search}
+                  statusFilter={statusFilter}
                   onSelect={handleSelect} onViewChange={handleViewChange}
-                  onSearchChange={handleSearchChange} onRefresh={loadTickets}
+                  onSearchChange={handleSearchChange} onStatusFilterChange={handleStatusFilterChange} onRefresh={loadTickets}
                 />
               } />
               <Route path="/supervisor" element={

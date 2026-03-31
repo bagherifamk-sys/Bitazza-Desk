@@ -31,8 +31,12 @@ export default function MessageBubble({ message, primaryColor = '#6366f1', botNa
   const agentAvatar = message.agentAvatar ?? escalatedAgent?.avatar ?? agentName[0];
   const agentAvatarUrl = message.agentAvatarUrl ?? escalatedAgent?.avatarUrl;
 
-  const displayName = isAgent ? agentName : (botName ?? 'Support');
-  const displayAvatarUrl = resolveAvatarUrl(displayName, isAgent ? agentAvatarUrl : botAvatarUrl);
+  // Static messages pin their name via senderName; AI messages use botName after category is selected
+  const assistantDisplayName = message.senderName ?? botName ?? 'Bitazza Support';
+  const displayName = isAgent ? agentName : assistantDisplayName;
+  // Prefer avatar pinned onto the message; fall back to live botAvatarUrl only for unpinned bubbles
+  const assistantAvatarUrl = message.agentAvatarUrl ?? (message.senderName ? null : botAvatarUrl);
+  const displayAvatarUrl = resolveAvatarUrl(displayName, isAgent ? agentAvatarUrl : assistantAvatarUrl);
   const displayAvatar = isAgent ? agentAvatar : displayName[0].toUpperCase();
 
   return (
@@ -52,12 +56,25 @@ export default function MessageBubble({ message, primaryColor = '#6366f1', botNa
       )}
 
       <div
-        className={`csbot-bubble max-w-[80%] px-4 py-2.5 text-sm whitespace-pre-wrap break-words leading-relaxed ${
+        className={`csbot-bubble max-w-[80%] px-4 py-2.5 text-sm break-words leading-relaxed ${
           isUser ? 'csbot-bubble-user' : isAgent ? 'csbot-bubble-agent' : 'csbot-bubble-bot'
         }`}
         style={isUser ? { background: `linear-gradient(135deg, ${primaryColor} 0%, ${primaryColor}dd 100%)` } : undefined}
       >
-        {message.content}
+        {message.id === 'greeting' ? (
+          (() => {
+            const [enPart, thPart] = message.content.split('\n---\n');
+            return (
+              <>
+                <span className="whitespace-pre-wrap">{enPart}</span>
+                <div className="my-2 border-t border-gray-200/60" />
+                <span className="whitespace-pre-wrap">{thPart}</span>
+              </>
+            );
+          })()
+        ) : (
+          <span className="whitespace-pre-wrap">{message.content}</span>
+        )}
       </div>
 
       <span className="text-[10px] text-gray-400/60 mt-1 mx-1">{time}</span>

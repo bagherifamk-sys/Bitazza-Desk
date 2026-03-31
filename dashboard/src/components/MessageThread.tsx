@@ -519,9 +519,9 @@ export default function MessageThread({ ticketId, ws, onStatusChange, pendingDra
               value={reply}
               onChange={e => handleReplyChange(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
               }}
-              placeholder={isNote ? 'Internal note…' : `Reply via ${replyChannel}… (/ for canned responses, ⌘↵ to send)`}
+              placeholder={isNote ? 'Internal note… (↵ to send, ⇧↵ for newline)' : `Reply via ${replyChannel}… (/ for canned responses, ↵ to send, ⇧↵ for newline)`}
               className={`w-full text-sm px-3.5 py-3 resize-none outline-none leading-relaxed min-h-[80px] ${
                 isNote ? 'bg-accent-amber/8 text-text-primary placeholder:text-text-muted' : 'bg-surface-2 text-text-primary placeholder:text-text-muted'
               }`}

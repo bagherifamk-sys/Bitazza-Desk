@@ -91,6 +91,8 @@ export interface SendResult {
   agentAvatar: string | null;
   agentAvatarUrl: string | null;
   offerResolution: boolean;
+  upgradedCategory: string | null;
+  transitionMessage: string | null;
 }
 
 export interface GreetResult {
@@ -172,5 +174,7 @@ export async function sendMessage(
     agentAvatar: data.agent_avatar ?? null,
     agentAvatarUrl: data.agent_avatar_url ?? null,
     offerResolution: data.offer_resolution ?? false,
+    upgradedCategory: data.upgraded_category ?? null,
+    transitionMessage: data.transition_message ?? null,
   };
 }

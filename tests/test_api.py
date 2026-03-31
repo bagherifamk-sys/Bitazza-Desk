@@ -191,6 +191,7 @@ def test_chat_message_calls_agent(client):
     mock_result.confidence = 0.9
     mock_result.resolved = False
     mock_result.specialist_intro = None
+    mock_result.confidence = 1.0
 
     with patch("api.routes.chat.chat", return_value=mock_result):
         r = client.post("/chat/message", json={

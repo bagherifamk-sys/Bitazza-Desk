@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import type { Ticket, InboxView, Priority, TicketStatus } from '../types';
-import { ChannelBadge, PriorityBadge } from './ui/Badge';
+import type { Ticket, InboxView, StatusFilter, Priority, TicketStatus } from '../types';
+import { ChannelBadge, PriorityBadge, CategoryBadge } from './ui/Badge';
 import { Avatar } from './ui/Avatar';
 import { ConversationRowSkeleton } from './ui/Skeleton';
 import { EmptyState } from './ui/EmptyState';
@@ -14,17 +14,30 @@ const VIEWS: { id: InboxView; label: string }[] = [
   { id: 'by_priority', label: 'Priority'    },
 ];
 
+const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
+  { id: 'all',                  label: 'All'        },
+  { id: 'Open_Live',            label: 'Open'       },
+  { id: 'In_Progress',          label: 'Active'     },
+  { id: 'Pending_Customer',     label: 'Pending'    },
+  { id: 'Escalated',            label: 'Escalated'  },
+  { id: 'Closed_Resolved',      label: 'Resolved'   },
+  { id: 'Closed_Unresponsive',  label: 'Closed'     },
+];
+
 // Status → left-accent color
 const STATUS_ACCENT: Partial<Record<TicketStatus, string>> = {
-  Open_Live:        'bg-accent-green',
-  In_Progress:      'bg-accent-blue',
-  Pending_Customer: 'bg-accent-amber',
-  Escalated:        'bg-brand',
+  Open_Live:           'bg-accent-green',
+  In_Progress:         'bg-accent-blue',
+  Pending_Customer:    'bg-accent-amber',
+  Escalated:           'bg-brand',
+  Closed_Resolved:     'bg-surface-5',
+  Closed_Unresponsive: 'bg-surface-5',
 };
 
 function timeAgo(ts: string | number | null | undefined): string {
   if (!ts) return '';
-  const epoch = typeof ts === 'number' ? ts : Math.floor(new Date(ts).getTime() / 1000);
+  const numeric = typeof ts === 'number' ? ts : (typeof ts === 'string' && /^\d+$/.test(ts) ? Number(ts) : NaN);
+  const epoch = Number.isFinite(numeric) ? numeric : Math.floor(new Date(ts).getTime() / 1000);
   const s = Math.floor(Date.now() / 1000) - epoch;
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
@@ -44,15 +57,17 @@ interface Props {
   selectedId: string | null;
   view: InboxView;
   search: string;
+  statusFilter: StatusFilter;
   onSelect: (id: string) => void;
   onViewChange: (v: InboxView) => void;
   onSearchChange: (s: string) => void;
+  onStatusFilterChange: (f: StatusFilter) => void;
   onRefresh: () => void;
 }
 
 export default function ConversationList({
-  tickets, selectedId, view, search,
-  onSelect, onViewChange, onSearchChange, onRefresh,
+  tickets, selectedId, view, search, statusFilter,
+  onSelect, onViewChange, onSearchChange, onStatusFilterChange, onRefresh,
 }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
@@ -111,28 +126,6 @@ export default function ConversationList({
         </button>
       </div>
 
-      {/* Search */}
-      <div className="px-3 py-2 border-b border-surface-5 shrink-0">
-        <div className="relative">
-          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
-          </svg>
-          <input
-            value={search}
-            onChange={e => onSearchChange(e.target.value)}
-            placeholder="Search conversations…"
-            className="w-full bg-surface-3 ring-1 ring-surface-5 text-text-primary text-xs pl-9 pr-3 py-2 rounded-full outline-none focus:ring-brand transition-all placeholder:text-text-muted"
-          />
-          {search && (
-            <button onClick={() => onSearchChange('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12"/>
-              </svg>
-            </button>
-          )}
-        </div>
-      </div>
-
       {/* View tabs */}
       <div className="flex overflow-x-auto border-b border-surface-5 shrink-0 scrollbar-hide">
         {VIEWS.map(v => (
@@ -146,6 +139,45 @@ export default function ConversationList({
             }`}
           >
             {v.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Search */}
+      <div className="px-3 py-2 border-b border-surface-5 shrink-0">
+        <div className="relative">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
+          </svg>
+          <input
+            value={search}
+            onChange={e => onSearchChange(e.target.value)}
+            placeholder="Search by ID, name, email or UID…"
+            className="w-full bg-surface-3 ring-1 ring-surface-5 text-text-primary text-xs pl-9 pr-3 py-2 rounded-full outline-none focus:ring-brand transition-all placeholder:text-text-muted"
+          />
+          {search && (
+            <button onClick={() => onSearchChange('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Status filter tabs */}
+      <div className="flex overflow-x-auto border-b border-surface-5 shrink-0 scrollbar-hide bg-surface-2">
+        {STATUS_FILTERS.map(f => (
+          <button
+            key={f.id}
+            onClick={() => onStatusFilterChange(f.id)}
+            className={`shrink-0 text-[11px] px-3 py-2 border-b-2 whitespace-nowrap transition-colors duration-100 ${
+              statusFilter === f.id
+                ? 'border-brand text-text-primary font-semibold'
+                : 'border-transparent text-text-muted hover:text-text-secondary'
+            }`}
+          >
+            {f.label}
           </button>
         ))}
       </div>
@@ -179,7 +211,7 @@ export default function ConversationList({
         ) : tickets.length === 0 ? (
           <EmptyState
             title="No conversations"
-            description={search ? `No results for "${search}"` : 'All clear — no open conversations.'}
+            description={search ? `No results for "${search}"` : statusFilter === 'all' ? 'No conversations found.' : `No ${STATUS_FILTERS.find(f => f.id === statusFilter)?.label.toLowerCase()} tickets.`}
             className="h-40"
           />
         ) : tickets.map(ticket => {
@@ -242,6 +274,9 @@ export default function ConversationList({
                 {/* Row 3: badges */}
                 <div className="flex items-center gap-1 flex-wrap">
                   <ChannelBadge channel={ticket.channel as any} size="xs" />
+                  {ticket.category && (
+                    <CategoryBadge category={ticket.category} size="xs" />
+                  )}
                   {ticket.priority !== 3 && (
                     <PriorityBadge priority={ticket.priority as Priority} size="xs" />
                   )}

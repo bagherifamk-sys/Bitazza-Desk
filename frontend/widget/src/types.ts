@@ -65,6 +65,8 @@ export interface Message {
   agentAvatar?: string;
   agentAvatarUrl?: string;
   offerResolution?: boolean;
+  /** Explicit sender name to display — overrides the dynamic botName. Used to pin static messages to "Bitazza Support". */
+  senderName?: string;
 }
 
 export interface CSBotConfig {

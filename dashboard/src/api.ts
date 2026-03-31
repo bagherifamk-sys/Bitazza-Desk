@@ -1,8 +1,8 @@
 import { io, type Socket } from 'socket.io-client';
 import type {
   Ticket, TicketDetail, TicketStatus, Priority, Agent, AgentRole,
-  AgentStatus, InboxView, SupervisorStats, QueueItem, SLARiskTicket,
-  AnalyticsFilters, RelatedTicket,
+  AgentStatus, InboxView, StatusFilter, SupervisorStats, QueueItem, SLARiskTicket,
+  AnalyticsFilters, RelatedTicket, KnowledgeItem,
 } from './types';
 
 // ── Base URL ──────────────────────────────────────────────────────────────────
@@ -63,8 +63,8 @@ export const api = {
     ),
 
   // Tickets
-  getTickets: (view: InboxView = 'all_open', search = '') =>
-    req<Ticket[]>(`/api/tickets?view=${view}&search=${encodeURIComponent(search)}`),
+  getTickets: (view: InboxView = 'all_open', search = '', statusFilter: StatusFilter = 'all') =>
+    req<{ tickets: Ticket[] }>(`/api/tickets?view=${view}&search=${encodeURIComponent(search)}&status_filter=${statusFilter}`).then(r => r.tickets),
 
   getTicket: (id: string) =>
     req<TicketDetail>(`/api/tickets/${id}`),
@@ -177,8 +177,10 @@ export const api = {
   deleteCannedResponse: (id: string) =>
     req(`/api/canned-responses/${id}`, { method: 'DELETE' }),
 
-  // Tags (Phase 4 — stub)
-  getTags: (): Promise<string[]> => Promise.resolve([]),
+  // Tags
+  getTags: () => req<{ tags: string[] }>('/api/tags').then(r => r.tags),
+  createTag: (name: string) => req<{ tags: string[] }>('/api/tags', { method: 'POST', body: JSON.stringify({ name }) }).then(r => r.tags),
+  deleteTag: (name: string) => req<{ tags: string[] }>(`/api/tags/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(r => r.tags),
 
   // Copilot
   suggestReply: (ticketId: string) =>
@@ -205,6 +207,36 @@ export const api = {
     req<{ related: RelatedTicket[] }>('/api/copilot/related-tickets', {
       method: 'POST', body: JSON.stringify({ ticketId }),
     }),
+
+  // Knowledge Base
+  listKnowledge: () =>
+    req<{ items: KnowledgeItem[] }>('/api/knowledge').then(r => r.items),
+
+  addKnowledgeUrl: (url: string) =>
+    req<KnowledgeItem>('/api/knowledge/url', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
+
+  uploadKnowledgeFile: (file: File) => {
+    const token = getToken();
+    const form = new FormData();
+    form.append('file', file);
+    return fetch(`${API}/api/knowledge/upload`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    }).then(async r => {
+      if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error((b as { detail?: string }).detail ?? `${r.status}`); }
+      return r.json() as Promise<KnowledgeItem>;
+    });
+  },
+
+  deleteKnowledge: (id: number) =>
+    req(`/api/knowledge/${id}`, { method: 'DELETE' }),
+
+  getKnowledgeChunks: (id: number) =>
+    req<{ item_id: number; chunks: { index: number; text: string }[] }>(`/api/knowledge/${id}/chunks`),
 
   // FR-09: Core API — live customer profile from Bitazza backend (5s timeout)
   getCoreProfile: async (bitazzaUid: string) => {

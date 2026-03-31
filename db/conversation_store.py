@@ -785,8 +785,12 @@ def delete_role(name: str) -> None:
 # ── Knowledge Base ─────────────────────────────────────────────────────────────
 
 def create_knowledge_item(title: str, source_type: str, source_ref: str | None, chunk_count: int, created_by: str | None) -> dict:
-    # created_by is a UUID string from the JWT sub claim
-    creator_id = created_by if created_by else None
+    # created_by must be a valid UUID; fall back to NULL for non-UUID values (e.g. dev fallback)
+    import uuid as _uuid
+    try:
+        creator_id = str(_uuid.UUID(created_by)) if created_by else None
+    except (ValueError, AttributeError):
+        creator_id = None
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute("""

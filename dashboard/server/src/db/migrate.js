@@ -191,6 +191,7 @@ INSERT INTO role_permissions (role_name, permission) VALUES
   ('admin', 'section.inbox'),
   ('admin', 'section.supervisor'),
   ('admin', 'section.analytics'),
+  ('admin', 'section.knowledge'),
   ('admin', 'section.admin'),
   ('admin', 'inbox.reply'),
   ('admin', 'inbox.assign'),
@@ -208,6 +209,7 @@ INSERT INTO role_permissions (role_name, permission) VALUES
   ('super_admin', 'section.analytics'),
   ('super_admin', 'section.metrics'),
   ('super_admin', 'section.studio'),
+  ('super_admin', 'section.knowledge'),
   ('super_admin', 'section.admin'),
   ('super_admin', 'inbox.reply'),
   ('super_admin', 'inbox.assign'),
@@ -220,6 +222,12 @@ INSERT INTO role_permissions (role_name, permission) VALUES
   ('super_admin', 'admin.agents'),
   ('super_admin', 'admin.roles'),
   ('super_admin', 'admin.settings')
+ON CONFLICT DO NOTHING;
+
+-- Backfill section.knowledge for existing admin/super_admin rows
+INSERT INTO role_permissions (role_name, permission) VALUES
+  ('admin',       'section.knowledge'),
+  ('super_admin', 'section.knowledge')
 ON CONFLICT DO NOTHING;
 
 -- roles.display_name — optional human-readable label for custom roles

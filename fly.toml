@@ -1,0 +1,30 @@
+app = "cs-bot-api"
+primary_region = "sin"  # Singapore — closest to Thailand
+
+[build]
+
+[env]
+  ENV = "production"
+  CHROMA_PATH = "/data/chroma"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[[mounts]]
+  source = "csbot_data"
+  destination = "/data"
+  initial_size = "3gb"

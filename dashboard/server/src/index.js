@@ -18,6 +18,7 @@ const metricsRouter    = require('./routes/metrics');
 const studioRouter     = require('./routes/studio');
 const coreRouter       = require('./routes/core');
 const rolesRouter      = require('./routes/roles');
+const knowledgeRouter  = require('./routes/knowledge');
 
 // Libs
 const sockets = require('./lib/sockets');
@@ -56,6 +57,7 @@ app.use('/api/metrics',         metricsRouter);
 app.use('/api/studio',          studioRouter);
 app.use('/api/core',            coreRouter);
 app.use('/api/roles',           rolesRouter);
+app.use('/api/knowledge',       knowledgeRouter);
 
 // Serve uploaded avatars
 app.use('/uploads', require('express').static(require('path').join(__dirname, '..', 'uploads')));

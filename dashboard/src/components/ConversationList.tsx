@@ -152,7 +152,7 @@ export default function ConversationList({
           <input
             value={search}
             onChange={e => onSearchChange(e.target.value)}
-            placeholder="Search by ID, name, email or UID…"
+            placeholder="Search tickets, messages, name, email…"
             className="w-full bg-surface-3 ring-1 ring-surface-5 text-text-primary text-xs pl-9 pr-3 py-2 rounded-full outline-none focus:ring-brand transition-all placeholder:text-text-muted"
           />
           {search && (

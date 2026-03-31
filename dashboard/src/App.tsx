@@ -594,7 +594,7 @@ function TopBar({ myStatus, activeChats, onStatusChange, onSearchOpen }: TopBarP
           title="Search (⌘K)"
         >
           {Icons.search}
-          <span className="flex-1 text-left">Search by ticket ID, name, email or UID…</span>
+          <span className="flex-1 text-left">Search tickets, messages, name, email…</span>
           <kbd className="text-[10px] bg-surface-4 px-1.5 py-0.5 rounded text-text-muted font-mono">⌘K</kbd>
         </button>
       </div>
@@ -632,7 +632,7 @@ function SearchModal({ onClose, onSelectTicket }: { onClose: () => void; onSelec
     const timer = setTimeout(async () => {
       setLoading(true);
       try {
-        const tickets = await api.getTickets('all_open', query.trim());
+        const tickets = await api.getTickets('all', query.trim());
         setResults(tickets);
         setActiveIdx(0);
       } catch { setResults([]); }
@@ -661,7 +661,7 @@ function SearchModal({ onClose, onSelectTicket }: { onClose: () => void; onSelec
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search by ticket ID, name, email or UID…"
+            placeholder="Search tickets, messages, name, email…"
             className="flex-1 bg-transparent text-text-primary text-sm outline-none placeholder:text-text-muted"
           />
           <kbd className="text-[10px] text-text-muted bg-surface-4 px-2 py-1 rounded font-mono">ESC</kbd>
@@ -670,7 +670,7 @@ function SearchModal({ onClose, onSelectTicket }: { onClose: () => void; onSelec
         {/* Results */}
         {!query.trim() ? (
           <div className="p-4 text-text-muted text-xs text-center">
-            Search by ticket ID, customer name, email, or UID
+            Search tickets, messages, customer name, email, or UID
           </div>
         ) : loading ? (
           <div className="p-4 text-text-muted text-xs text-center">Searching…</div>
@@ -807,7 +807,7 @@ export default function App() {
 
   const loadTickets = async () => {
     try {
-      const data = await api.getTickets(view, search, statusFilter);
+      const data = await api.getTickets(search ? 'all' : view, search, statusFilter);
       setTickets(data);
       if (!selectedId && data.length > 0) handleSelect(data[0].id);
     } catch { /* backend stub — silent */ }

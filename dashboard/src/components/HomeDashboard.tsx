@@ -102,6 +102,7 @@ interface HomeDashboardProps {
 export default function HomeDashboard({ onSelectTicket }: HomeDashboardProps) {
   const navigate = useNavigate();
   const [allTickets, setAllTickets] = useState<Ticket[]>([]);
+  const [stats, setStats] = useState({ open: 0, active: 0, escalated: 0, pending: 0, resolved: 0, closed: 0 });
   const [loading, setLoading] = useState(true);
 
   // Read user name from localStorage for greeting
@@ -113,8 +114,12 @@ export default function HomeDashboard({ onSelectTicket }: HomeDashboardProps) {
     const load = async () => {
       setLoading(true);
       try {
-        const data = await api.getTickets('all_open', '');
+        const [data, statsData] = await Promise.all([
+          api.getTickets('all_open', ''),
+          api.getTicketStats(),
+        ]);
         setAllTickets(data);
+        setStats(statsData);
       } catch {
         setAllTickets([]);
       } finally {
@@ -148,11 +153,11 @@ export default function HomeDashboard({ onSelectTicket }: HomeDashboardProps) {
     })
     .slice(0, 15);
 
-  const openCount      = allTickets.filter(t => t.status === 'Open_Live' || t.status === 'In_Progress').length;
-  const activeCount    = allTickets.filter(t => t.status === 'In_Progress').length;
-  const escalatedCount = allTickets.filter(t => t.status === 'Escalated').length;
+  const openCount      = stats.open;
+  const activeCount    = stats.active;
+  const escalatedCount = stats.escalated;
+  const pendingCount   = stats.pending;
   const vipCount       = allTickets.filter(t => t.priority === 1).length;
-  const pendingCount   = allTickets.filter(t => t.status === 'Pending_Customer').length;
 
   return (
     <div className="flex-1 overflow-y-auto bg-surface-0">

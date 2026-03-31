@@ -30,7 +30,7 @@ const server = http.createServer(app);
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3001',
+  origin: process.env.FRONTEND_URL || 'http://localhost:3002',
   credentials: true,
 }));
 app.use(express.json({ limit: '2mb' }));
@@ -60,11 +60,23 @@ app.use('/api/roles',           rolesRouter);
 // Serve uploaded avatars
 app.use('/uploads', require('express').static(require('path').join(__dirname, '..', 'uploads')));
 
+// Serve React static files (production build)
+const publicDir = require('path').join(__dirname, '..', '..', '..', 'public');
+if (require('fs').existsSync(publicDir)) {
+  app.use(require('express').static(publicDir));
+}
+
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
-// 404 handler
-app.use((req, res) => res.status(404).json({ error: 'Not found' }));
+// SPA fallback — serve React app for all non-API routes
+const indexHtml = require('path').join(__dirname, '..', '..', '..', 'public', 'index.html');
+if (require('fs').existsSync(indexHtml)) {
+  app.get('*', (req, res) => res.sendFile(indexHtml));
+} else {
+  // 404 handler (dev mode, no static build)
+  app.use((req, res) => res.status(404).json({ error: 'Not found' }));
+}
 
 // Error handler
 app.use((err, req, res, _next) => {
@@ -73,7 +85,7 @@ app.use((err, req, res, _next) => {
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-const PORT = process.env.SERVER_PORT || 3002;
+const PORT = process.env.SERVER_PORT || 4000;
 
 async function boot() {
   // Connect Redis (non-blocking — app still starts if Redis is down)
@@ -91,7 +103,7 @@ async function boot() {
 
   server.listen(PORT, () => {
     console.log(`[server] listening on :${PORT}`);
-    console.log(`[server] frontend expected at ${process.env.FRONTEND_URL || 'http://localhost:3001'}`);
+    console.log(`[server] frontend expected at ${process.env.FRONTEND_URL || 'http://localhost:3002'}`);
   });
 }
 

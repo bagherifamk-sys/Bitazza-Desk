@@ -41,8 +41,8 @@ export default defineConfig({
   server: {
     port: 3002,
     proxy: {
-      '/api': 'http://127.0.0.1:8000',
-      '/uploads': 'http://127.0.0.1:8000',
+      '/api': 'http://127.0.0.1:4000',
+      '/uploads': 'http://127.0.0.1:4000',
     },
   },
 });

@@ -93,9 +93,27 @@ async function routeTicket(ticketId, customerId, priority, team = 'default') {
 // All ticket routes require auth
 router.use(authenticate);
 
+// ── GET /api/tickets/stats ────────────────────────────────────────────────────
+router.get('/stats', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT status, COUNT(*) AS count FROM tickets GROUP BY status`);
+    const counts = Object.fromEntries(rows.map(r => [r.status, parseInt(r.count)]));
+    res.json({
+      open:       (counts['Open_Live'] ?? 0) + (counts['In_Progress'] ?? 0),
+      active:     counts['In_Progress'] ?? 0,
+      escalated:  counts['Escalated'] ?? 0,
+      pending:    counts['Pending_Customer'] ?? 0,
+      resolved:   counts['Closed_Resolved'] ?? 0,
+      closed:     counts['Closed_Unresponsive'] ?? 0,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── GET /api/tickets ─────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
-  const { view = 'all_open', search = '', limit = 50, offset = 0 } = req.query;
+  const { view = 'all_open', search = '', limit = 50, offset = 0, status_filter = 'all' } = req.query;
   const agentId = req.user.id;
 
   let whereClauses = [];
@@ -104,33 +122,41 @@ router.get('/', async (req, res) => {
 
   const addParam = (val) => { params.push(val); return `$${p++}`; };
 
-  // View filters
+  // View filters (skip status restrictions when an explicit status_filter is set)
+  const hasStatusFilter = status_filter && status_filter !== 'all';
   switch (view) {
     case 'mine':
       whereClauses.push(`t.assigned_to = ${addParam(agentId)}`);
-      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
       break;
     case 'unassigned':
       whereClauses.push(`t.assigned_to IS NULL`);
-      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
       break;
     case 'sla_risk':
       whereClauses.push(`t.sla_deadline < NOW() + INTERVAL '30 minutes'`);
       whereClauses.push(`t.sla_breached = false`);
-      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
       break;
     case 'waiting':
       whereClauses.push(`t.status = 'Pending_Customer'`);
       break;
     case 'by_priority':
-      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      break;
+    case 'all':
       break;
     default: // all_open
-      whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+  }
+
+  if (hasStatusFilter) {
+    whereClauses.push(`t.status = ${addParam(status_filter)}`);
   }
 
   if (search) {
-    whereClauses.push(`(c.name ILIKE ${addParam(`%${search}%`)} OR c.email ILIKE ${addParam(`%${search}%`)} OR t.id::text ILIKE ${addParam(`%${search}%`)})`);
+    const sp = addParam(`%${search}%`);
+    whereClauses.push(`(c.name ILIKE ${sp} OR c.email ILIKE ${sp} OR t.id::text ILIKE ${sp} OR EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.content ILIKE ${sp}))`);
   }
 
   const where = whereClauses.length ? 'WHERE ' + whereClauses.join(' AND ') : '';
@@ -140,7 +166,7 @@ router.get('/', async (req, res) => {
       SELECT
         t.id, t.status, t.priority, t.channel, t.category, t.tags,
         t.sla_deadline, t.sla_breached, t.created_at, t.updated_at,
-        t.assigned_to,
+        t.assigned_to, t.ai_persona,
         c.id          AS customer_id,
         c.name        AS customer_name,
         c.email       AS customer_email,
@@ -172,6 +198,7 @@ router.get('/', async (req, res) => {
       updated_at:       t.updated_at,
       assigned_to:      t.assigned_to,
       assigned_to_name: t.assigned_to_name,
+      ai_persona:       t.ai_persona ?? null,
       last_message:     t.last_message,
       last_message_at:  t.last_message_at,
       customer: {

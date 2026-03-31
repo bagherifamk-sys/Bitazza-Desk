@@ -28,6 +28,7 @@ export type TicketCategory =
   | 'ai_handling';
 
 export type InboxView =
+  | 'all'
   | 'all_open'
   | 'mine'
   | 'unassigned'
@@ -115,6 +116,7 @@ export interface Ticket {
   // Legacy frontend field names
   assigned_agent_id?: string | null;
   assigned_agent_name?: string | null;
+  ai_persona?: { ai_name?: string; ai_avatar?: string; ai_avatar_url?: string } | null;
   tags: string[];
   sla_deadline?: string | null;   // ISO timestamp from DB
   sla_breach_at?: string | null;  // alias

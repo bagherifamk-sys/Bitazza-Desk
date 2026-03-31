@@ -64,7 +64,10 @@ export const api = {
 
   // Tickets
   getTickets: (view: InboxView = 'all_open', search = '', statusFilter: StatusFilter = 'all') =>
-    req<{ tickets: Ticket[] }>(`/api/tickets?view=${view}&search=${encodeURIComponent(search)}&status_filter=${statusFilter}`).then(r => r.tickets),
+    req<Ticket[]>(`/api/tickets?view=${view}&search=${encodeURIComponent(search)}&status_filter=${statusFilter}`),
+
+  getTicketStats: () =>
+    req<{ open: number; active: number; escalated: number; pending: number; resolved: number; closed: number }>('/api/tickets/stats'),
 
   getTicket: (id: string) =>
     req<TicketDetail>(`/api/tickets/${id}`),

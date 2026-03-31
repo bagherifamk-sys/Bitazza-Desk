@@ -95,9 +95,32 @@ def _ensure_customer(cur, user_id: str) -> str:
     User/KYC API so the dashboard shows name, email, tier, and KYC status.
     Returns the customer UUID.
     """
-    cur.execute("SELECT id FROM customers WHERE external_id = %s", (user_id,))
+    cur.execute("SELECT id, name FROM customers WHERE external_id = %s", (user_id,))
     row = cur.fetchone()
     if row:
+        if row["name"] and row["name"].startswith("widget:"):
+            # Profile fetch failed at creation time — retry now
+            try:
+                profile = _fetch_user_profile(user_id)
+                first = profile.get("first_name", "")
+                last  = profile.get("last_name", "")
+                display_name = f"{first} {last}".strip()
+                if display_name:
+                    email      = profile.get("email") or None
+                    phone      = profile.get("phone") or None
+                    tier       = profile.get("tier") or None
+                    kyc_status = (profile.get("kyc") or {}).get("status") or None
+                    cur.execute("""
+                        UPDATE customers
+                        SET name       = %s,
+                            email      = COALESCE(%s, email),
+                            phone      = COALESCE(%s, phone),
+                            tier       = COALESCE(%s, tier),
+                            kyc_status = COALESCE(%s, kyc_status)
+                        WHERE id = %s
+                    """, (display_name, email, phone, tier, kyc_status, row["id"]))
+            except Exception:
+                logger.exception("Failed to enrich profile for user_id=%s — keeping existing name", user_id)
         return row["id"]
 
     # Fall back to name-tag lookup for rows created before external_id column existed

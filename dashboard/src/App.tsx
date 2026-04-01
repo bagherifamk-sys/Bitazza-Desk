@@ -767,6 +767,7 @@ function Workspace({ ws, tickets, ticketStats, selectedId, view, search, statusF
           ticket={selectedTicket}
           onUpdate={onRefresh}
           onAcceptDraft={(text) => setPendingDraft(text)}
+          onSelectTicket={onSelect}
         />
       )}
     </div>

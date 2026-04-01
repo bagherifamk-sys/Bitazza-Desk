@@ -98,6 +98,7 @@ interface Props {
   ticket: Ticket;
   onUpdate: () => void;
   onAcceptDraft?: (text: string) => void;
+  onSelectTicket?: (ticketId: string) => void;
 }
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
@@ -107,7 +108,7 @@ const PANEL_TABS = [
   { id: 'copilot',  label: 'AI Copilot' },
 ];
 
-export default function PropertiesPanel({ ticket, onUpdate, onAcceptDraft }: Props) {
+export default function PropertiesPanel({ ticket, onUpdate, onAcceptDraft, onSelectTicket }: Props) {
   const canAssign = usePerm('inbox.assign');
   const [activeTab, setActiveTab] = useState<'details' | 'copilot'>('details');
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -361,7 +362,7 @@ export default function PropertiesPanel({ ticket, onUpdate, onAcceptDraft }: Pro
 
         {/* ── AI Copilot Tab ── */}
         {activeTab === 'copilot' && (
-          <CopilotPanel ticketId={ticket.id} onAcceptDraft={onAcceptDraft} />
+          <CopilotPanel ticketId={ticket.id} onAcceptDraft={onAcceptDraft} onSelectTicket={onSelectTicket} />
         )}
       </div>
     </aside>

@@ -16,7 +16,7 @@ const SENTIMENT_CONFIG: Record<string, { label: string; cls: string }> = {
   neutral:  { label: 'Neutral',  cls: 'bg-surface-4 text-text-secondary ring-1 ring-surface-5' },
 };
 
-export default function CopilotPanel({ ticketId, onAcceptDraft }: Props) {
+export default function CopilotPanel({ ticketId, onAcceptDraft, onSelectTicket }: Props) {
   const [suggestion, setSuggestion]             = useState('');
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [suggestionError, setSuggestionError]   = useState('');
@@ -223,7 +223,11 @@ export default function CopilotPanel({ ticketId, onAcceptDraft }: Props) {
           <p className="text-xs text-text-muted italic">No related tickets found.</p>
         )}
         {!relatedLoading && related.map(t => (
-          <div key={t.id} className="bg-surface-3 ring-1 ring-surface-5 rounded-lg px-3 py-2.5 space-y-0.5">
+          <div
+            key={t.id}
+            onClick={() => onSelectTicket?.(t.id)}
+            className={`bg-surface-3 ring-1 ring-surface-5 rounded-lg px-3 py-2.5 space-y-0.5 ${onSelectTicket ? 'cursor-pointer hover:bg-surface-4 hover:ring-brand/30 transition-colors' : ''}`}
+          >
             <div className="flex items-center justify-between">
               <span className="font-mono text-[10px] text-text-muted">{t.id.slice(0, 8)}…</span>
               <span className="text-[10px] text-text-muted">{t.status?.replace(/_/g, ' ')}</span>

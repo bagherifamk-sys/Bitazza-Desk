@@ -7,6 +7,7 @@ import { Skeleton } from './ui/Skeleton';
 interface Props {
   ticketId: string;
   onAcceptDraft?: (text: string) => void;
+  onSelectTicket?: (ticketId: string) => void;
 }
 
 const SENTIMENT_CONFIG: Record<string, { label: string; cls: string }> = {
@@ -87,6 +88,53 @@ export default function CopilotPanel({ ticketId, onAcceptDraft }: Props) {
   return (
     <div className="p-4 space-y-5">
 
+      {/* ── Summary ──────────────────────────────────────────────────── */}
+      <CopilotSection
+        title="Summary"
+        action={
+          <button
+            onClick={loadSummary}
+            disabled={summaryLoading}
+            className="text-xs text-brand hover:text-brand-dim font-medium disabled:opacity-40 transition-colors flex items-center gap-1"
+          >
+            {summaryLoading ? <><Spinner size="xs" /> Summarizing…</> : summary ? 'Refresh' : 'Summarize'}
+          </button>
+        }
+      >
+        {summaryError && <p className="text-xs text-brand">{summaryError}</p>}
+        {!summary && !summaryLoading && !summaryError && (
+          <p className="text-xs text-text-muted italic">Click Summarize to get an AI overview.</p>
+        )}
+        {summaryLoading && !summary && (
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-4/5" />
+          </div>
+        )}
+        {summary && (() => {
+          const lines = summary.split('\n').map(l => l.trim()).filter(Boolean);
+          const parsed = lines.map(line => {
+            const colon = line.indexOf(':');
+            if (colon === -1) return { label: '', text: line };
+            return { label: line.slice(0, colon).trim(), text: line.slice(colon + 1).trim() };
+          });
+          return (
+            <div className="bg-accent-amber/5 ring-1 ring-accent-amber/20 rounded-lg divide-y divide-accent-amber/10 text-xs">
+              {parsed.map((row, i) => (
+                <div key={i} className="flex gap-2 px-2.5 py-2 leading-relaxed">
+                  {row.label && (
+                    <span className="shrink-0 font-semibold text-accent-amber w-16 text-[10px] uppercase tracking-wide">
+                      {row.label}
+                    </span>
+                  )}
+                  <span className="text-text-secondary">{row.text}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+      </CopilotSection>
+
       {/* ── Reply Suggestion ─────────────────────────────────────────── */}
       <CopilotSection
         title="Reply Suggestion"
@@ -161,53 +209,6 @@ export default function CopilotPanel({ ticketId, onAcceptDraft }: Props) {
               </span>
             : <span className="text-xs text-text-muted italic">Analyzing…</span>
         }
-      </CopilotSection>
-
-      {/* ── Summary ──────────────────────────────────────────────────── */}
-      <CopilotSection
-        title="Summary"
-        action={
-          <button
-            onClick={loadSummary}
-            disabled={summaryLoading}
-            className="text-xs text-brand hover:text-brand-dim font-medium disabled:opacity-40 transition-colors flex items-center gap-1"
-          >
-            {summaryLoading ? <><Spinner size="xs" /> Summarizing…</> : summary ? 'Refresh' : 'Summarize'}
-          </button>
-        }
-      >
-        {summaryError && <p className="text-xs text-brand">{summaryError}</p>}
-        {!summary && !summaryLoading && !summaryError && (
-          <p className="text-xs text-text-muted italic">Click Summarize to get an AI overview.</p>
-        )}
-        {summaryLoading && !summary && (
-          <div className="space-y-2">
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-4/5" />
-          </div>
-        )}
-        {summary && (() => {
-          const lines = summary.split('\n').map(l => l.trim()).filter(Boolean);
-          const parsed = lines.map(line => {
-            const colon = line.indexOf(':');
-            if (colon === -1) return { label: '', text: line };
-            return { label: line.slice(0, colon).trim(), text: line.slice(colon + 1).trim() };
-          });
-          return (
-            <div className="bg-accent-amber/5 ring-1 ring-accent-amber/20 rounded-lg divide-y divide-accent-amber/10 text-xs">
-              {parsed.map((row, i) => (
-                <div key={i} className="flex gap-2 px-2.5 py-2 leading-relaxed">
-                  {row.label && (
-                    <span className="shrink-0 font-semibold text-accent-amber w-16 text-[10px] uppercase tracking-wide">
-                      {row.label}
-                    </span>
-                  )}
-                  <span className="text-text-secondary">{row.text}</span>
-                </div>
-              ))}
-            </div>
-          );
-        })()}
       </CopilotSection>
 
       {/* ── Related Tickets ──────────────────────────────────────────── */}

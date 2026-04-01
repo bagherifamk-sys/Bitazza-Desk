@@ -306,7 +306,7 @@ export default function PropertiesPanel({ ticket, onUpdate, onAcceptDraft }: Pro
                 </div>
                 <PropRow label="Created" value={ticket.created_at ? new Date(
                   typeof ticket.created_at === 'number' ? ticket.created_at * 1000 : ticket.created_at
-                ).toLocaleDateString() : '—'} />
+                ).toLocaleString() : '—'} />
               </div>
             </Section>
 

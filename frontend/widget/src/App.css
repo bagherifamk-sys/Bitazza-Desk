@@ -1,3 +1,12 @@
+#page-bg {
+  min-height: 100vh;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: flex;
+  flex-direction: column;
+}
+
 .counter {
   font-size: 16px;
   padding: 5px 10px;

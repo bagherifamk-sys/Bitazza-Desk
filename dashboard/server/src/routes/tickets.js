@@ -181,7 +181,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN customers c ON t.customer_id = c.id
       LEFT JOIN users u ON t.assigned_to = u.id
       ${where}
-      ORDER BY t.priority ASC, t.updated_at DESC
+      ORDER BY COALESCE((SELECT MAX(created_at) FROM messages WHERE ticket_id = t.id), t.created_at) DESC
       LIMIT ${addParam(parseInt(limit))} OFFSET ${addParam(parseInt(offset))}
     `;
     const { rows } = await pool.query(sql, params);
@@ -441,10 +441,14 @@ router.post('/:id/escalate', requirePermission('inbox.escalate'), async (req, re
 router.post('/', async (req, res) => {
   const { customer_id, channel, category, priority = 3, team = 'default' } = req.body;
   if (!customer_id || !channel) return res.status(400).json({ error: 'customer_id and channel required' });
-  const p = Number(priority);
+  let p = Number(priority);
   if (![1,2,3].includes(p)) return res.status(400).json({ error: 'priority must be 1, 2, or 3' });
   const id = uuidv4();
   try {
+    // FR-05: VIP customers always get priority 1
+    const { rows: custRows } = await pool.query('SELECT tier FROM customers WHERE id=$1', [customer_id]);
+    if (custRows[0]?.tier === 'VIP') p = 1;
+
     await pool.query(
       `INSERT INTO tickets (id, customer_id, channel, category, priority, team)
        VALUES ($1,$2,$3,$4,$5,$6)`,

@@ -354,11 +354,11 @@ router.post('/:id/messages', requirePermission('inbox.reply'), async (req, res) 
   const replyChannel = VALID_CHANNELS.includes(channel) ? channel : null;
 
   try {
+    const msgMeta = { agent_name: req.user.name, ...(replyChannel ? { channel: replyChannel } : {}) };
     const { rows } = await pool.query(
       `INSERT INTO messages (ticket_id, sender_type, sender_id, content, metadata)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [req.params.id, senderType, req.user.id, content.trim(),
-       replyChannel ? JSON.stringify({ channel: replyChannel }) : '{}']
+      [req.params.id, senderType, req.user.id, content.trim(), JSON.stringify(msgMeta)]
     );
     // Update ticket status to In_Progress on first agent reply
     if (!is_note) {

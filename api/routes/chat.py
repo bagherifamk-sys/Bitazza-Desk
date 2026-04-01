@@ -216,7 +216,10 @@ def submit_csat(body: CSATRequest, user_id: str = Depends(get_user_id)):
 
 @router.get("/history/{conversation_id}")
 def get_conversation_history(conversation_id: str, user_id: str = Depends(get_user_id)):
-    return {"history": get_history(conversation_id, limit=50)}
+    return {
+        "history": get_history(conversation_id, limit=50),
+        "human_handling": is_human_handling(conversation_id),
+    }
 
 
 @router.websocket("/ws/{conversation_id}")

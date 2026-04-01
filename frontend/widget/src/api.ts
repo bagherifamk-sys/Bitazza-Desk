@@ -137,13 +137,18 @@ export async function greetConversation(cfg: CSBotConfig, conversationId: string
   return { greeting: data.greeting as string, botName: data.bot_name as string, botAvatarUrl: data.agent_avatar_url ?? null };
 }
 
-export async function fetchHistory(cfg: CSBotConfig, conversationId: string): Promise<{ role: string; content: string; created_at: number; agent_name?: string; agent_avatar?: string; agent_avatar_url?: string }[]> {
+export interface HistoryResult {
+  messages: { role: string; content: string; created_at: number; agent_name?: string; agent_avatar?: string; agent_avatar_url?: string }[];
+  humanHandling: boolean;
+}
+
+export async function fetchHistory(cfg: CSBotConfig, conversationId: string): Promise<HistoryResult> {
   const res = await fetch(`${cfg.apiUrl}/chat/history/${conversationId}`, {
     headers: getHeaders(cfg),
   });
-  if (!res.ok) return [];
+  if (!res.ok) return { messages: [], humanHandling: false };
   const data = await res.json();
-  return data.history ?? [];
+  return { messages: data.history ?? [], humanHandling: data.human_handling ?? false };
 }
 
 export async function sendMessage(

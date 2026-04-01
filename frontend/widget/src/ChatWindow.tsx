@@ -91,7 +91,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
       if (existing.category) {
         setSelectedCategory(existing.category as IssueCategory);
       }
-      fetchHistory(cfg, existing.id).then((history) => {
+      fetchHistory(cfg, existing.id).then(({ messages: history, humanHandling }) => {
         if (history.length === 0) {
           // Session exists but no messages — show greeting
           showGreeting();
@@ -108,6 +108,10 @@ export default function ChatWindow({ cfg, onClose }: Props) {
         if (restoredAgent) {
           setEscalated(true);
           setEscalatedAgent(restoredAgent);
+        } else if (humanHandling) {
+          // Human has taken over from dashboard but hasn't replied yet — dismiss the "connecting" banner
+          setEscalated(true);
+          setEscalatedAgent({ name: 'Support Agent', avatar: 'S', avatarUrl: null });
         }
         const restored: Message[] = history.map((m) => ({
           id: `restored-${m.created_at}`,
@@ -236,7 +240,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
     lastAgentMsgTime.current = startedAt;
 
     const poll = async () => {
-      const history = await fetchHistory(cfg, convId);
+      const { messages: history, humanHandling } = await fetchHistory(cfg, convId);
       const newAgentMsgs = history.filter(
         (m) => m.role === 'agent' && m.created_at > lastAgentMsgTime.current
       );
@@ -246,14 +250,15 @@ export default function ChatWindow({ cfg, onClose }: Props) {
         // Prefer identity already known from escalation response; fall back to message metadata
         const firstMsg = newAgentMsgs[0];
         setEscalated(true);
+        const agentName = firstMsg.agent_name || 'Support Agent';
+        const agent = {
+          name: agentName,
+          avatar: firstMsg.agent_avatar ?? agentName[0].toUpperCase(),
+          avatarUrl: firstMsg.agent_avatar_url ?? null,
+        };
+        setEscalatedAgent(agent);
+        storeSessionAgent(agent);
         if (firstMsg.agent_name) {
-          const agent = {
-            name: firstMsg.agent_name,
-            avatar: firstMsg.agent_avatar ?? firstMsg.agent_name[0].toUpperCase(),
-            avatarUrl: firstMsg.agent_avatar_url ?? null,
-          };
-          setEscalatedAgent(agent);
-          storeSessionAgent(agent);
           setAgentConnectedBanner((prev) => prev ?? firstMsg.agent_name ?? null);
         }
         setTimeout(() => setAgentConnectedBanner(null), 7000);
@@ -269,6 +274,11 @@ export default function ChatWindow({ cfg, onClose }: Props) {
             agentAvatarUrl: m.agent_avatar_url ?? undefined,
           })),
         ]);
+      } else if (humanHandling) {
+        // Dashboard marked conversation as escalated but agent hasn't replied yet —
+        // dismiss the "connecting" spinner banner without waiting for a message.
+        setEscalated(true);
+        setEscalatedAgent((prev) => prev ?? { name: 'Support Agent', avatar: 'S', avatarUrl: null });
       }
     };
     const interval = setInterval(poll, 3000);

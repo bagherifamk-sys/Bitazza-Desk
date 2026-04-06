@@ -13,6 +13,7 @@ import AIStudio from './components/AIStudio';
 import MetricsDashboard from './components/MetricsDashboard';
 import HomeDashboard from './components/HomeDashboard';
 import KnowledgeBase from './components/KnowledgeBase';
+import User360 from './components/User360';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -355,6 +356,12 @@ const Icons = {
         d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.966 8.966 0 00-6 2.292m0-14.25v14.25" />
     </svg>
   ),
+  users: (
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-[18px] h-[18px]">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/>
+    </svg>
+  ),
   admin: (
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-[18px] h-[18px]">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
@@ -415,6 +422,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/analytics',  label: 'Analytics',  icon: Icons.analytics,  permission: 'section.analytics',  shortcut: '⌘4' },
   { to: '/metrics',    label: 'Metrics',    icon: Icons.metrics,    permission: 'section.metrics',    shortcut: '⌘5' },
   { to: '/knowledge',  label: 'Knowledge',  icon: Icons.knowledge,  permission: 'section.knowledge' },
+  { to: '/users',      label: 'User360',    icon: Icons.users,      permission: 'section.users' },
   { to: '/studio',     label: 'AI Studio',  icon: Icons.studio,     permission: 'section.studio' },
   { to: '/admin',      label: 'Admin',      icon: Icons.admin,      permission: 'section.admin' },
 ];
@@ -426,6 +434,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/analytics':  'Analytics',
   '/metrics':    'Metrics',
   '/knowledge':  'Knowledge Base',
+  '/users':      'User360',
   '/studio':     'AI Studio',
   '/admin':      'Admin',
 };
@@ -632,7 +641,8 @@ function SearchModal({ onClose, onSelectTicket }: { onClose: () => void; onSelec
     const timer = setTimeout(async () => {
       setLoading(true);
       try {
-        const tickets = await api.getTickets('all', query.trim());
+        const raw = await api.getTickets('all', query.trim());
+        const tickets: Ticket[] = Array.isArray(raw) ? raw : (raw as { tickets: Ticket[] }).tickets ?? [];
         setResults(tickets);
         setActiveIdx(0);
       } catch { setResults([]); }
@@ -810,10 +820,12 @@ export default function App() {
 
   const loadTickets = async () => {
     try {
-      const [data, stats] = await Promise.all([
+      const [raw, stats] = await Promise.all([
         api.getTickets(search ? 'all' : view, search, statusFilter),
         api.getTicketStats(),
       ]);
+      // Backend wraps the list: { tickets: [...] } — unwrap if needed
+      const data: Ticket[] = Array.isArray(raw) ? raw : (raw as { tickets: Ticket[] }).tickets ?? [];
       setTickets(data);
       setTicketStats({ open: stats.open, active: stats.active, escalated: stats.escalated });
       if (!selectedId && data.length > 0) handleSelect(data[0].id);
@@ -987,6 +999,11 @@ export default function App() {
               <Route path="/knowledge" element={
                 <PermissionGuard permission="section.knowledge" user={user}>
                   <KnowledgeBase currentUser={user} />
+                </PermissionGuard>
+              } />
+              <Route path="/users" element={
+                <PermissionGuard permission="section.users" user={user}>
+                  <User360 />
                 </PermissionGuard>
               } />
               <Route path="*" element={<Navigate to="/" replace />} />

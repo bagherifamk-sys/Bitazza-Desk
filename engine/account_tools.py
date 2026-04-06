@@ -107,20 +107,36 @@ def get_withdrawal_status(user_id: str, tx_id: str | None = None) -> dict:
 
 def get_account_restrictions(user_id: str) -> dict:
     """
-    Returns active account restrictions.
-    Expected: {restrictions: [str], reason: str}
+    Returns active account restrictions for the authenticated user.
+    Response keys: user_id, has_restrictions, restrictions (list), trading_available,
+                   trading_block_reason.
+    Each restriction: restriction_id, type, status, reason, applied_at,
+                      expected_lift_at, can_self_resolve, resolution_steps.
     """
-    # return _get(FREEDOM_API_URL, f"/internal/users/{user_id}/restrictions")
-    return {"restrictions": [], "reason": "stub — API not yet configured"}
+    prefix = "/mock" if _USE_MOCK else ""
+    url = f"{_USER_API_BASE}{prefix}/restrictions"
+    try:
+        r = requests.get(url, params={"user_id": user_id}, headers=_USER_HEADERS, timeout=5)
+        if r.status_code == 401:
+            return {"error": "unauthorized"}
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def get_trading_availability(user_id: str) -> dict:
     """
     Returns whether trading is available for the user.
-    Expected: {available: bool, reason: str}
+    Derived from get_account_restrictions — no separate API call needed.
     """
-    # return _get(BITAZZA_API_URL, f"/internal/users/{user_id}/trading-availability")
-    return {"available": True, "reason": "stub — API not yet configured"}
+    data = get_account_restrictions(user_id)
+    if "error" in data:
+        return data
+    return {
+        "available": data.get("trading_available", True),
+        "reason": data.get("trading_block_reason") or "No trading restrictions active.",
+    }
 
 
 # ── Tool registry for agent.py ───────────────────────────────────────────────

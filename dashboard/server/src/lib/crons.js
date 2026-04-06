@@ -10,7 +10,7 @@ function start() {
   setInterval(async () => {
     try {
       const { rows } = await pool.query(`
-        UPDATE tickets SET sla_breached=true, updated_at=NOW()
+        UPDATE tickets SET sla_breached=true
         WHERE sla_deadline < NOW()
           AND sla_breached = false
           AND status NOT IN ('Closed_Resolved','Closed_Unresponsive')

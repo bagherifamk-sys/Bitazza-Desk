@@ -95,8 +95,16 @@ router.use(authenticate);
 
 // ── GET /api/tickets/stats ────────────────────────────────────────────────────
 router.get('/stats', async (req, res) => {
+  const SCOPED_ROLES = ['agent', 'kyc_agent', 'finance_agent'];
+  const teamFilter = SCOPED_ROLES.includes(req.user.role)
+    ? `WHERE team = $1`
+    : '';
+  const teamParams = SCOPED_ROLES.includes(req.user.role) ? [req.user.team] : [];
   try {
-    const { rows } = await pool.query(`SELECT status, COUNT(*) AS count FROM tickets GROUP BY status`);
+    const { rows } = await pool.query(
+      `SELECT status, COUNT(*) AS count FROM tickets ${teamFilter} GROUP BY status`,
+      teamParams
+    );
     const counts = Object.fromEntries(rows.map(r => [r.status, parseInt(r.count)]));
     res.json({
       open:       (counts['Open_Live'] ?? 0) + (counts['In_Progress'] ?? 0),
@@ -152,6 +160,13 @@ router.get('/', async (req, res) => {
 
   if (hasStatusFilter) {
     whereClauses.push(`t.status = ${addParam(status_filter)}`);
+  }
+
+  // Team scoping: agents only see tickets belonging to their team.
+  // Supervisors, admins, and super_admins see all teams.
+  const SCOPED_ROLES = ['agent', 'kyc_agent', 'finance_agent'];
+  if (SCOPED_ROLES.includes(req.user.role)) {
+    whereClauses.push(`t.team = ${addParam(req.user.team)}`);
   }
 
   if (search) {
@@ -354,7 +369,11 @@ router.post('/:id/messages', requirePermission('inbox.reply'), async (req, res) 
   const replyChannel = VALID_CHANNELS.includes(channel) ? channel : null;
 
   try {
-    const msgMeta = { agent_name: req.user.name, ...(replyChannel ? { channel: replyChannel } : {}) };
+    const rawAvatarUrl = req.user.avatar_url ?? null;
+    const agentAvatarUrl = rawAvatarUrl && rawAvatarUrl.startsWith('/')
+      ? `${req.protocol}://${req.get('host')}${rawAvatarUrl}`
+      : rawAvatarUrl;
+    const msgMeta = { agent_name: req.user.name, agent_avatar_url: agentAvatarUrl, ...(replyChannel ? { channel: replyChannel } : {}) };
     const { rows } = await pool.query(
       `INSERT INTO messages (ticket_id, sender_type, sender_id, content, metadata)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
@@ -375,6 +394,7 @@ router.post('/:id/messages', requirePermission('inbox.reply'), async (req, res) 
         sender_type: msg.sender_type,
         content: msg.content,
         agent_name: req.user.name,
+        agent_avatar_url: agentAvatarUrl,
         is_internal_note: senderType === 'internal_note',
         created_at: Math.floor(new Date(msg.created_at).getTime() / 1000),
       },
@@ -437,9 +457,19 @@ router.post('/:id/escalate', requirePermission('inbox.escalate'), async (req, re
   }
 });
 
+// Category → team routing map (keep in sync with _CATEGORY_TEAM in db/conversation_store.py)
+const CATEGORY_TEAM_MAP = {
+  kyc_verification:    'kyc',
+  withdrawal_issue:    'withdrawals',
+  account_restriction: 'cs',
+  password_2fa_reset:  'cs',
+  fraud_security:      'cs',
+};
+
 // ── POST /api/tickets (create) ────────────────────────────────────────────────
 router.post('/', async (req, res) => {
-  const { customer_id, channel, category, priority = 3, team = 'default' } = req.body;
+  const { customer_id, channel, category, priority = 3, team } = req.body;
+  const resolvedTeam = team ?? CATEGORY_TEAM_MAP[category] ?? 'cs';
   if (!customer_id || !channel) return res.status(400).json({ error: 'customer_id and channel required' });
   let p = Number(priority);
   if (![1,2,3].includes(p)) return res.status(400).json({ error: 'priority must be 1, 2, or 3' });
@@ -452,10 +482,10 @@ router.post('/', async (req, res) => {
     await pool.query(
       `INSERT INTO tickets (id, customer_id, channel, category, priority, team)
        VALUES ($1,$2,$3,$4,$5,$6)`,
-      [id, customer_id, channel, category, p, team]
+      [id, customer_id, channel, category, p, resolvedTeam]
     );
     // FR-02/04/05: auto-route on creation
-    const assignedTo = await routeTicket(id, customer_id, p, team).catch(err => {
+    const assignedTo = await routeTicket(id, customer_id, p, resolvedTeam).catch(err => {
       console.warn('[route] routing failed:', err.message);
       return null;
     });

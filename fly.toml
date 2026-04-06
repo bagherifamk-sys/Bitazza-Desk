@@ -1,11 +1,17 @@
-app = "cs-bot-api"
-primary_region = "sin"  # Singapore — closest to Thailand
+app = "csbot-api"
+primary_region = "sin"
 
 [build]
 
 [env]
   ENV = "production"
   CHROMA_PATH = "/data/chroma"
+  USE_MOCK_USER_API = "true"
+  USER_API_BASE_URL = "https://csbot-api.fly.dev"
+  USER_API_KEY = "mock-dev-token"
+  MAX_RAG_CHUNKS = "5"
+  RATE_LIMIT_PER_MINUTE = "20"
+  ESCALATION_CONFIDENCE_THRESHOLD = "0.6"
 
 [http_service]
   internal_port = 8080

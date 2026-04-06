@@ -16,6 +16,7 @@ const ALL_PERMISSIONS = [
   'section.metrics',
   'section.studio',
   'section.knowledge',
+  'section.users',
   'section.admin',
   'inbox.reply',
   'inbox.assign',
@@ -32,7 +33,7 @@ const ALL_PERMISSIONS = [
 
 // Permissions admin role has — ceiling for admin callers
 const ADMIN_PERMISSIONS = new Set([
-  'section.home', 'section.inbox', 'section.supervisor', 'section.analytics', 'section.knowledge', 'section.admin',
+  'section.home', 'section.inbox', 'section.supervisor', 'section.analytics', 'section.knowledge', 'section.users', 'section.admin',
   'inbox.reply', 'inbox.assign', 'inbox.close', 'inbox.escalate', 'inbox.internal_note', 'inbox.claim',
   'admin.agents', 'admin.roles', 'admin.settings',
 ]);

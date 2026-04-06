@@ -7,19 +7,21 @@ from config.settings import GEMINI_API_KEY
 logger = logging.getLogger(__name__)
 
 try:
-    import google.generativeai as genai
-    genai.configure(api_key=GEMINI_API_KEY)
-    _model = genai.GenerativeModel("gemini-2.0-flash")
+    from google import genai as _genai
+    _client = _genai.Client(api_key=GEMINI_API_KEY)
 except Exception:
-    logger.exception("Failed to initialise Gemini model — copilot features disabled")
-    _model = None
+    logger.exception("Failed to initialise Gemini client — copilot features disabled")
+    _client = None
 
 
 async def _call(prompt: str) -> str:
-    if not _model:
+    if not _client:
         return ""
     try:
-        resp = _model.generate_content(prompt)
+        resp = _client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        )
         return resp.text.strip()
     except Exception:
         logger.exception("Gemini copilot call failed — returning empty string")

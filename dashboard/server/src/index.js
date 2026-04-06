@@ -19,6 +19,7 @@ const studioRouter     = require('./routes/studio');
 const coreRouter       = require('./routes/core');
 const rolesRouter      = require('./routes/roles');
 const knowledgeRouter  = require('./routes/knowledge');
+const usersRouter      = require('./routes/users');
 
 // Libs
 const sockets = require('./lib/sockets');
@@ -58,6 +59,10 @@ app.use('/api/studio',          studioRouter);
 app.use('/api/core',            coreRouter);
 app.use('/api/roles',           rolesRouter);
 app.use('/api/knowledge',       knowledgeRouter);
+app.use('/api/users',           usersRouter);
+
+// Health check — must be before static/SPA fallback
+app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
 // Serve uploaded avatars
 app.use('/uploads', require('express').static(require('path').join(__dirname, '..', 'uploads')));
@@ -67,9 +72,6 @@ const publicDir = require('path').join(__dirname, '..', '..', '..', 'public');
 if (require('fs').existsSync(publicDir)) {
   app.use(require('express').static(publicDir));
 }
-
-// Health check
-app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
 // SPA fallback — serve React app for all non-API routes
 const indexHtml = require('path').join(__dirname, '..', '..', '..', 'public', 'index.html');

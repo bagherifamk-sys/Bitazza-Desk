@@ -59,6 +59,7 @@ async function signToken(user) {
       id: user.id,
       email: user.email,
       name: user.name,
+      avatar_url: user.avatar_url ?? null,  // added so req.user.avatar_url is available on every request
       role: user.role,
       team: user.team,
       permissions,

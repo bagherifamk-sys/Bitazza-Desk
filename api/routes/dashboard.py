@@ -1,7 +1,10 @@
 """CS Dashboard API routes — internal agent-facing endpoints."""
+import logging
 import time
 import uuid
 import shutil
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from pydantic import BaseModel
@@ -23,7 +26,8 @@ from db.conversation_store import (
 )
 from api.ws_manager import manager
 from api.copilot import suggest_reply, summarize_conversation, classify_sentiment, find_related_tickets
-from api.routes.auth import USERS_BY_ID
+# USERS_BY_ID is kept for legacy imports but is always empty; agent info is fetched from DB instead
+# from api.routes.auth import USERS_BY_ID  # reverted if needed
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
@@ -131,7 +135,7 @@ async def reply_to_conversation(conversation_id: str, body: ReplyRequest, user_i
     conv = get_conversation_with_history(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    agent_info = USERS_BY_ID.get(user_id)
+    agent_info = get_agent(user_id)  # live DB lookup — was USERS_BY_ID.get(user_id) (always empty)
     agent_display_name = agent_info["name"] if agent_info else user_id
     agent_avatar_url = agent_info.get("avatar_url") if agent_info else None
     mid = add_message(conversation_id, "agent", body.message, {
@@ -183,7 +187,7 @@ async def reply_to_ticket(ticket_id: str, body: ReplyRequest, user_id: str = Dep
     ticket = get_ticket_with_history(ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    agent_info = USERS_BY_ID.get(user_id)
+    agent_info = get_agent(user_id)  # live DB lookup — was USERS_BY_ID.get(user_id) (always empty)
     agent_display_name = agent_info["name"] if agent_info else user_id
     agent_avatar_url = agent_info.get("avatar_url") if agent_info else None
     mid = add_message(
@@ -229,7 +233,8 @@ async def post_ticket_message(ticket_id: str, body: MessagesRequest, user_id: st
     ticket = get_ticket_with_history(ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    agent_info = USERS_BY_ID.get(user_id)
+    agent_info = get_agent(user_id)  # live DB lookup — was USERS_BY_ID.get(user_id) (always empty)
+    logger.warning("DEBUG avatar: user_id=%r agent_info=%r", user_id, agent_info)
     agent_display_name = agent_info["name"] if agent_info else user_id
     agent_avatar_url = agent_info.get("avatar_url") if agent_info else None
     sender_type = "internal_note" if body.is_note else "agent"

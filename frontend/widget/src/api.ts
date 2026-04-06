@@ -67,19 +67,28 @@ export function storeSessionAgent(agent: StoredAgent) {
   if (existing) storeSession(existing.id, existing.lang, existing.category, agent);
 }
 
+let _startPromise: Promise<string> | null = null;
+
 export async function startConversation(cfg: CSBotConfig): Promise<string> {
   const cached = getStoredSession();
   if (cached) return cached.id;
 
-  const res = await fetch(`${cfg.apiUrl}/chat/start`, {
-    method: 'POST',
-    headers: getHeaders(cfg),
-    body: JSON.stringify({ platform: cfg.platform }),
-  });
-  if (!res.ok) throw new Error(`start failed: ${res.status}`);
-  const data = await res.json();
-  storeSession(data.conversation_id);
-  return data.conversation_id as string;
+  // Deduplicate concurrent calls (e.g. React StrictMode double-mount)
+  // so only one /chat/start request is ever in-flight at a time.
+  if (_startPromise) return _startPromise;
+
+  _startPromise = (async () => {
+    const res = await fetch(`${cfg.apiUrl}/chat/start`, {
+      method: 'POST',
+      headers: getHeaders(cfg),
+      body: JSON.stringify({ platform: cfg.platform }),
+    });
+    if (!res.ok) throw new Error(`start failed: ${res.status}`);
+    const data = await res.json();
+    storeSession(data.conversation_id);
+    return data.conversation_id as string;
+  })().finally(() => { _startPromise = null; });
+  return _startPromise;
 }
 
 export interface SendResult {

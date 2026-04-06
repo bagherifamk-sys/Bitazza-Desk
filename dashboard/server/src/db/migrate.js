@@ -210,6 +210,7 @@ INSERT INTO role_permissions (role_name, permission) VALUES
   ('super_admin', 'section.metrics'),
   ('super_admin', 'section.studio'),
   ('super_admin', 'section.knowledge'),
+  ('super_admin', 'section.users'),
   ('super_admin', 'section.admin'),
   ('super_admin', 'inbox.reply'),
   ('super_admin', 'inbox.assign'),
@@ -224,10 +225,15 @@ INSERT INTO role_permissions (role_name, permission) VALUES
   ('super_admin', 'admin.settings')
 ON CONFLICT DO NOTHING;
 
--- Backfill section.knowledge for existing admin/super_admin rows
+-- Backfill section.knowledge and section.users for existing rows
 INSERT INTO role_permissions (role_name, permission) VALUES
   ('admin',       'section.knowledge'),
-  ('super_admin', 'section.knowledge')
+  ('super_admin', 'section.knowledge'),
+  ('admin',       'section.users'),
+  ('super_admin', 'section.users'),
+  ('supervisor',  'section.users'),
+  ('finance_agent', 'section.users'),
+  ('kyc_agent',   'section.users')
 ON CONFLICT DO NOTHING;
 
 -- roles.display_name — optional human-readable label for custom roles
@@ -317,14 +323,28 @@ EXCEPTION WHEN others THEN NULL;
 END $$;
 
 -- Seed a default super_admin (password: admin123)
-INSERT INTO users (email, name, password_hash, role, state)
+INSERT INTO users (email, name, password_hash, role, team, state)
 VALUES (
   'admin@bitazza.com',
   'Admin',
   '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lihC',
   'super_admin',
+  'cs',
   'Available'
 ) ON CONFLICT (email) DO NOTHING;
+
+-- Seed specialist agents for team-based routing tests
+-- All passwords: agent123
+INSERT INTO users (email, name, password_hash, role, team, max_chats, state) VALUES
+  -- KYC team
+  ('mint@bitazza.com',   'Mint',  '$2a$10$mBiadgYwPZWH8cJE7KYkYOlKCMxRYfzBZpd.zAcUMDvxKZ7dt8SBK', 'kyc_agent',     'kyc',        3, 'Available'),
+  -- Withdrawals / finance team
+  ('arm@bitazza.com',    'Arm',   '$2a$10$mBiadgYwPZWH8cJE7KYkYOlKCMxRYfzBZpd.zAcUMDvxKZ7dt8SBK', 'finance_agent', 'withdrawals', 3, 'Available'),
+  -- General CS team (handles account_restriction, password/2FA, other)
+  ('james@bitazza.com',  'James', '$2a$10$mBiadgYwPZWH8cJE7KYkYOlKCMxRYfzBZpd.zAcUMDvxKZ7dt8SBK', 'agent',         'cs',          3, 'Available'),
+  ('ploy@bitazza.com',   'Ploy',  '$2a$10$mBiadgYwPZWH8cJE7KYkYOlKCMxRYfzBZpd.zAcUMDvxKZ7dt8SBK', 'agent',         'cs',          3, 'Available'),
+  ('nook@bitazza.com',   'Nook',  '$2a$10$mBiadgYwPZWH8cJE7KYkYOlKCMxRYfzBZpd.zAcUMDvxKZ7dt8SBK', 'agent',         'cs',          3, 'Available')
+ON CONFLICT (email) DO NOTHING;
 `;
 
 (async () => {

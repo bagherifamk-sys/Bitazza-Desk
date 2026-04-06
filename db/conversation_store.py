@@ -39,6 +39,17 @@ def init_db() -> None:
     pass
 
 
+# ── Category → team routing map ──────────────────────────────────────────────
+# Must stay in sync with CATEGORY_TEAM_MAP in dashboard/server/src/routes/tickets.js
+
+_CATEGORY_TEAM: dict[str, str] = {
+    "kyc_verification":    "kyc",
+    "withdrawal_issue":    "withdrawals",
+    "account_restriction": "cs",
+    "password_2fa_reset":  "cs",
+    "fraud_security":      "cs",
+}
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _role_to_sender_type(role: str) -> str:
@@ -182,20 +193,22 @@ def create_conversation(user_id: str, platform: str, language: str = "en", issue
         customer_id = _ensure_customer(cur, user_id)
 
         ticket_id = str(uuid.uuid4())
+        team = _CATEGORY_TEAM.get(issue_category, "cs")
         cur.execute("""
             INSERT INTO tickets (id, customer_id, channel, status, category, priority, team)
-            VALUES (%s, %s, 'web', 'Open_Live', %s, 3, 'cs')
-        """, (ticket_id, customer_id, issue_category or 'ai_handling'))
+            VALUES (%s, %s, 'web', 'Open_Live', %s, 3, %s)
+        """, (ticket_id, customer_id, issue_category or 'ai_handling', team))
 
     return ticket_id  # ticket_id IS the conversation_id in the Python layer
 
 
 def update_ticket_category(conversation_id: str, category: str) -> None:
+    team = _CATEGORY_TEAM.get(category, "cs")
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "UPDATE tickets SET category = %s, updated_at = NOW() WHERE id = %s",
-            (category, conversation_id),
+            "UPDATE tickets SET category = %s, team = %s, updated_at = NOW() WHERE id = %s",
+            (category, team, conversation_id),
         )
 
 
@@ -357,7 +370,7 @@ def is_human_handling(conversation_id: str) -> bool:
         row = cur.fetchone()
     if not row:
         return False
-    return row["status"] == "Escalated" or row["assigned_to"] is not None
+    return row["status"] in ("Escalated", "In_Progress") or row["assigned_to"] is not None
 
 
 def update_ticket_status(ticket_id: str, status: str, agent_id: str | None = None) -> None:

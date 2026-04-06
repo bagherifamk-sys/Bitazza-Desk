@@ -18,22 +18,12 @@ const ACCENTS: Record<IssueCategory, { bg: string; border: string; icon: string;
   other:              { bg: 'linear-gradient(135deg,#f8fafc 0%,#e2e8f0 100%)', border: '#94a3b8', icon: '#475569', glow: 'rgba(71,85,105,0.18)'  },
 };
 
-// "Other" spans full width in the mosaic grid
-const FULL_WIDTH: IssueCategory[] = ['other'];
-
 export default function CategoryPicker({ lang, primaryColor, onSelect, disabled }: Props) {
-  // Split into pairs for mosaic — last item goes full-width if count is odd or flagged
+  // Pair categories into rows of 2
   const pairs: (IssueCategoryDef | null)[][] = [];
   const cats = ISSUE_CATEGORIES;
-  for (let i = 0; i < cats.length; i++) {
-    if (FULL_WIDTH.includes(cats[i].key)) {
-      pairs.push([cats[i], null]);
-    } else if (i + 1 < cats.length && !FULL_WIDTH.includes(cats[i + 1].key)) {
-      pairs.push([cats[i], cats[i + 1]]);
-      i++;
-    } else {
-      pairs.push([cats[i], null]);
-    }
+  for (let i = 0; i < cats.length; i += 2) {
+    pairs.push([cats[i], cats[i + 1] ?? null]);
   }
 
   return (
@@ -47,7 +37,6 @@ export default function CategoryPicker({ lang, primaryColor, onSelect, disabled 
                 cat={cat}
                 lang={lang}
                 accent={ACCENTS[cat.key]}
-                fullWidth={row[1] === null}
                 disabled={disabled}
                 onSelect={onSelect}
               />
@@ -65,14 +54,12 @@ function MosaicCard({
   cat,
   lang,
   accent,
-  fullWidth,
   disabled,
   onSelect,
 }: {
   cat: IssueCategoryDef;
   lang: 'en' | 'th';
   accent: { bg: string; border: string; icon: string; glow: string };
-  fullWidth: boolean;
   disabled?: boolean;
   onSelect: (key: IssueCategory) => void;
 }) {
@@ -80,7 +67,7 @@ function MosaicCard({
     <button
       onClick={() => !disabled && onSelect(cat.key)}
       disabled={disabled}
-      className={`csbot-mosaic-card${fullWidth ? ' csbot-mosaic-card--full' : ''}`}
+      className="csbot-mosaic-card"
       style={{
         '--card-bg': accent.bg,
         '--card-border': accent.border,

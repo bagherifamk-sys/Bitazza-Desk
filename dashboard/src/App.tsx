@@ -421,7 +421,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/supervisor', label: 'Supervisor', icon: Icons.supervisor, permission: 'section.supervisor', shortcut: '⌘3' },
   { to: '/analytics',  label: 'Analytics',  icon: Icons.analytics,  permission: 'section.analytics',  shortcut: '⌘4' },
   { to: '/metrics',    label: 'Metrics',    icon: Icons.metrics,    permission: 'section.metrics',    shortcut: '⌘5' },
-  { to: '/knowledge',  label: 'Knowledge',  icon: Icons.knowledge,  permission: 'section.knowledge' },
+  { to: '/knowledge',  label: 'Knowledge Base',  icon: Icons.knowledge,  permission: 'section.knowledge' },
   { to: '/users',      label: 'User360',    icon: Icons.users,      permission: 'section.users' },
   { to: '/studio',     label: 'AI Studio',  icon: Icons.studio,     permission: 'section.studio' },
   { to: '/admin',      label: 'Admin',      icon: Icons.admin,      permission: 'section.admin' },

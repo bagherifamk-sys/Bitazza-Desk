@@ -225,15 +225,48 @@ INSERT INTO role_permissions (role_name, permission) VALUES
   ('super_admin', 'admin.settings')
 ON CONFLICT DO NOTHING;
 
--- Backfill section.knowledge and section.users for existing rows
+-- Backfill section.knowledge, section.users, and user360.* permissions
 INSERT INTO role_permissions (role_name, permission) VALUES
-  ('admin',       'section.knowledge'),
-  ('super_admin', 'section.knowledge'),
-  ('admin',       'section.users'),
-  ('super_admin', 'section.users'),
-  ('supervisor',  'section.users'),
+  ('admin',         'section.knowledge'),
+  ('super_admin',   'section.knowledge'),
+  -- section.users: who can access User360 page
+  ('agent',         'section.users'),
+  ('kyc_agent',     'section.users'),
   ('finance_agent', 'section.users'),
-  ('kyc_agent',   'section.users')
+  ('supervisor',    'section.users'),
+  ('admin',         'section.users'),
+  ('super_admin',   'section.users'),
+  -- user360.identity: basic name/email/phone/tier/KYC status
+  ('agent',         'user360.identity'),
+  ('kyc_agent',     'user360.identity'),
+  ('finance_agent', 'user360.identity'),
+  ('supervisor',    'user360.identity'),
+  ('admin',         'user360.identity'),
+  ('super_admin',   'user360.identity'),
+  -- user360.kyc: full KYC detail (rejection reason, reviewed date)
+  ('kyc_agent',     'user360.kyc'),
+  ('supervisor',    'user360.kyc'),
+  ('admin',         'user360.kyc'),
+  ('super_admin',   'user360.kyc'),
+  -- user360.restrictions: restriction type, reason, lift date
+  ('agent',         'user360.restrictions'),
+  ('kyc_agent',     'user360.restrictions'),
+  ('finance_agent', 'user360.restrictions'),
+  ('supervisor',    'user360.restrictions'),
+  ('admin',         'user360.restrictions'),
+  ('super_admin',   'user360.restrictions'),
+  -- user360.financials: balances, transactions, spot & futures trades
+  ('finance_agent', 'user360.financials'),
+  ('supervisor',    'user360.financials'),
+  ('admin',         'user360.financials'),
+  ('super_admin',   'user360.financials'),
+  -- user360.tickets: CS ticket history
+  ('agent',         'user360.tickets'),
+  ('kyc_agent',     'user360.tickets'),
+  ('finance_agent', 'user360.tickets'),
+  ('supervisor',    'user360.tickets'),
+  ('admin',         'user360.tickets'),
+  ('super_admin',   'user360.tickets')
 ON CONFLICT DO NOTHING;
 
 -- roles.display_name — optional human-readable label for custom roles
@@ -321,6 +354,28 @@ DO $$ BEGIN
   ALTER TABLE customers DROP CONSTRAINT IF EXISTS customers_tier_check;
 EXCEPTION WHEN others THEN NULL;
 END $$;
+
+-- ── Assignment Rules ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS assignment_rules (
+  key        VARCHAR PRIMARY KEY,
+  value      JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id)
+);
+
+-- Seed defaults (mirrors current hardcoded logic — idempotent)
+INSERT INTO assignment_rules (key, value) VALUES
+  ('category_team_map', '{
+    "kyc_verification":    "kyc",
+    "withdrawal_issue":    "withdrawals",
+    "account_restriction": "cs",
+    "password_2fa_reset":  "cs",
+    "fraud_security":      "cs"
+  }'),
+  ('sticky_agent_hours',  '12'),
+  ('vip_auto_priority1',  'true'),
+  ('sla_minutes',         '{"1": 1, "2": 3, "3": 10}')
+ON CONFLICT (key) DO NOTHING;
 
 -- Seed a default super_admin (password: admin123)
 INSERT INTO users (email, name, password_hash, role, team, state)

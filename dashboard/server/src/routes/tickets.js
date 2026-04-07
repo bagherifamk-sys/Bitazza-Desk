@@ -9,18 +9,20 @@ const { v4: uuidv4 } = require('uuid');
 // ── FR-02 Push routing | FR-04 Sticky routing | FR-05 VIP override ────────────
 // Returns assigned agent ID or null (queued).
 async function routeTicket(ticketId, customerId, priority, team = 'default') {
-  // FR-04: Sticky — look for the agent who last handled this customer (12h window)
+  // FR-04: Sticky — look for the agent who last handled this customer (window from DB rule)
   let stickyAgentId = null;
   try {
+    const rules = await getAssignmentRules();
+    const stickyHours = Number(rules['sticky_agent_hours'] ?? 12);
     const { rows } = await pool.query(`
       SELECT t.assigned_to
       FROM tickets t
       WHERE t.customer_id = $1
         AND t.assigned_to IS NOT NULL
-        AND t.updated_at >= NOW() - INTERVAL '12 hours'
+        AND t.updated_at >= NOW() - ($2 || ' hours')::interval
       ORDER BY t.updated_at DESC
       LIMIT 1
-    `, [customerId]);
+    `, [customerId, String(stickyHours)]);
     stickyAgentId = rows[0]?.assigned_to ?? null;
   } catch { /* non-fatal */ }
 
@@ -457,27 +459,39 @@ router.post('/:id/escalate', requirePermission('inbox.escalate'), async (req, re
   }
 });
 
-// Category → team routing map (keep in sync with _CATEGORY_TEAM in db/conversation_store.py)
-const CATEGORY_TEAM_MAP = {
-  kyc_verification:    'kyc',
-  withdrawal_issue:    'withdrawals',
-  account_restriction: 'cs',
-  password_2fa_reset:  'cs',
-  fraud_security:      'cs',
-};
+// ── Load assignment rules from DB (with in-process cache, 60s TTL) ────────────
+let _rulesCache = null;
+let _rulesCacheAt = 0;
+
+async function getAssignmentRules() {
+  if (_rulesCache && Date.now() - _rulesCacheAt < 60_000) return _rulesCache;
+  const { rows } = await pool.query(`SELECT key, value FROM assignment_rules`);
+  const r = {};
+  for (const row of rows) r[row.key] = row.value;
+  _rulesCache = r;
+  _rulesCacheAt = Date.now();
+  return r;
+}
+
+// Exported so the assignment-rules PATCH route can bust the cache on save
+function bustRulesCache() { _rulesCache = null; }
 
 // ── POST /api/tickets (create) ────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const { customer_id, channel, category, priority = 3, team } = req.body;
-  const resolvedTeam = team ?? CATEGORY_TEAM_MAP[category] ?? 'cs';
   if (!customer_id || !channel) return res.status(400).json({ error: 'customer_id and channel required' });
   let p = Number(priority);
   if (![1,2,3].includes(p)) return res.status(400).json({ error: 'priority must be 1, 2, or 3' });
   const id = uuidv4();
   try {
-    // FR-05: VIP customers always get priority 1
+    const rules = await getAssignmentRules();
+    const categoryTeamMap = rules['category_team_map'] ?? {};
+    const vipAutoPriority1 = rules['vip_auto_priority1'] !== false && rules['vip_auto_priority1'] !== 'false';
+    const resolvedTeam = team ?? categoryTeamMap[category] ?? 'cs';
+
+    // FR-05: VIP customers get priority 1 (if rule is enabled)
     const { rows: custRows } = await pool.query('SELECT tier FROM customers WHERE id=$1', [customer_id]);
-    if (custRows[0]?.tier === 'VIP') p = 1;
+    if (vipAutoPriority1 && custRows[0]?.tier === 'VIP') p = 1;
 
     await pool.query(
       `INSERT INTO tickets (id, customer_id, channel, category, priority, team)
@@ -496,3 +510,4 @@ router.post('/', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.bustRulesCache = bustRulesCache;

@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import type { Agent, AgentRole } from '../types';
 import type { AuthUser } from '../App';
 import { api } from '../api';
@@ -7,6 +8,19 @@ import { Spinner } from './ui/Spinner';
 
 const TABS = ['Agents', 'Roles', 'Tags', 'Canned Responses', 'Assignment Rules', 'SLA Targets', 'Bot Config'] as const;
 type Tab = typeof TABS[number];
+
+const TAB_SLUG: Record<Tab, string> = {
+  'Agents':           'agents',
+  'Roles':            'roles',
+  'Tags':             'tags',
+  'Canned Responses': 'canned-responses',
+  'Assignment Rules': 'assignment-rules',
+  'SLA Targets':      'sla-targets',
+  'Bot Config':       'bot-config',
+};
+const SLUG_TAB: Record<string, Tab> = Object.fromEntries(
+  Object.entries(TAB_SLUG).map(([tab, slug]) => [slug, tab as Tab])
+);
 
 const TAB_ICONS: Record<Tab, string> = {
   'Agents':           'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z',
@@ -21,7 +35,10 @@ const TAB_ICONS: Record<Tab, string> = {
 interface Props { currentUser: AuthUser; }
 
 export default function AdminSettings({ currentUser }: Props) {
-  const [tab, setTab] = useState<Tab>('Agents');
+  const { tab: tabSlug } = useParams<{ tab?: string }>();
+  const navigate = useNavigate();
+  const tab: Tab = (tabSlug && SLUG_TAB[tabSlug]) ? SLUG_TAB[tabSlug] : 'Agents';
+  const setTab = (t: Tab) => navigate(`/admin/${TAB_SLUG[t]}`, { replace: true });
 
   return (
     <div className="flex flex-1 overflow-hidden bg-surface-0">
@@ -69,7 +86,7 @@ export default function AdminSettings({ currentUser }: Props) {
           {tab === 'Roles'            && <RolesTab currentUser={currentUser} />}
           {tab === 'Tags'             && <TagsTab />}
           {tab === 'Canned Responses' && <CannedResponsesTab />}
-          {tab === 'Assignment Rules' && <StubTab label="Assignment Rules" description="Configure round-robin, load-balanced, or skill-based routing per channel and category." />}
+          {tab === 'Assignment Rules' && <AssignmentRulesTab />}
           {tab === 'SLA Targets'      && <StubTab label="SLA Targets" description="Set SLA response and resolution time targets per tier: VIP 1 min · EA 3 min · Standard 10 min." />}
           {tab === 'Bot Config'       && <StubTab label="Bot Config" description="Configure bot persona, greeting, fallback message, and business hours. Use AI Studio for flow editing." />}
         </div>
@@ -830,6 +847,382 @@ function CannedResponsesTab() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Assignment Rules tab ──────────────────────────────────────────────────────
+
+const CATEGORY_LABELS: Record<string, string> = {
+  kyc_verification:    'KYC Verification',
+  withdrawal_issue:    'Withdrawal Issue',
+  account_restriction: 'Account Restriction',
+  password_2fa_reset:  'Password / 2FA Reset',
+  fraud_security:      'Fraud & Security',
+};
+
+const KNOWN_TEAMS = ['cs', 'kyc', 'withdrawals', 'fraud'];
+
+const SLA_META = [
+  { priority: '1', label: 'VIP (Priority 1)',      badge: 'bg-accent-red/10 text-accent-red' },
+  { priority: '2', label: 'Elevated (Priority 2)', badge: 'bg-accent-amber/10 text-accent-amber' },
+  { priority: '3', label: 'Standard (Priority 3)', badge: 'bg-surface-4 text-text-muted' },
+];
+
+function Toggle({ on, onToggle, saving }: { on: boolean; onToggle: () => void; saving?: boolean }) {
+  return (
+    <button
+      onClick={onToggle}
+      disabled={saving}
+      className={`w-8 rounded-full relative shrink-0 transition-colors focus:outline-none ${on ? 'bg-brand' : 'bg-surface-4'} ${saving ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+      style={{ height: 18 }}
+    >
+      <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${on ? 'right-0.5' : 'left-0.5'}`} />
+    </button>
+  );
+}
+
+function RuleCard({ title, subtitle, editable, children }: { title: string; subtitle: string; editable?: boolean; children: React.ReactNode }) {
+  return (
+    <div className="bg-surface-2 ring-1 ring-surface-5 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-surface-5 flex items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold text-text-primary">{title}</p>
+          <p className="text-[11px] text-text-muted mt-0.5">{subtitle}</p>
+        </div>
+        <span className={`text-[9px] font-medium px-2 py-0.5 rounded-full uppercase tracking-wide shrink-0 mt-0.5 ${editable ? 'bg-brand/10 text-brand' : 'bg-surface-3 text-text-muted'}`}>
+          {editable ? 'Editable' : 'System'}
+        </span>
+      </div>
+      <div className="p-4">{children}</div>
+    </div>
+  );
+}
+
+type Rules = {
+  category_team_map: Record<string, string>;
+  sticky_agent_hours: number;
+  vip_auto_priority1: boolean;
+  sla_minutes: Record<string, number>;
+};
+
+interface ConfirmModal {
+  title: string;
+  description: string;
+  onConfirm: () => void;
+}
+
+function AssignmentRulesTab() {
+  const [saved, setSaved]     = useState<Rules | null>(null); // last committed state
+  const [draft, setDraft]     = useState<Rules | null>(null); // working copy
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [saving, setSaving]   = useState<string | null>(null);
+  const [toast, setToast]     = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmModal | null>(null);
+
+  useEffect(() => {
+    api.getAssignmentRules()
+      .then(raw => {
+        const rules: Rules = {
+          category_team_map:  raw['category_team_map']?.value  as Record<string, string> ?? {},
+          sticky_agent_hours: Number(raw['sticky_agent_hours']?.value ?? 12),
+          vip_auto_priority1: raw['vip_auto_priority1']?.value !== false && raw['vip_auto_priority1']?.value !== 'false',
+          sla_minutes:        raw['sla_minutes']?.value as Record<string, number> ?? { '1': 1, '2': 3, '3': 10 },
+        };
+        setSaved(rules);
+        setDraft(rules);
+      })
+      .catch(e => setError(e instanceof Error ? e.message : 'Failed to load rules'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  function showToast(msg: string, type: 'success' | 'error' = 'success') {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), type === 'error' ? 4000 : 2500);
+  }
+
+  const RULE_SAVE_MESSAGES: Record<string, (draft: Rules) => string> = {
+    category_team_map:  () => 'Category → Team routing updated. New tickets will be routed to the new teams.',
+    sticky_agent_hours: (d) => `Sticky agent window set to ${d.sticky_agent_hours} hour${d.sticky_agent_hours !== 1 ? 's' : ''}. Returning customers will be matched within this window.`,
+    vip_auto_priority1: (d) => d.vip_auto_priority1
+      ? 'VIP Auto-Priority enabled. VIP customers will now receive Priority 1 on all new tickets.'
+      : 'VIP Auto-Priority disabled. VIP customers will follow standard priority rules.',
+    sla_minutes: (d) => `SLA targets updated — P1: ${d.sla_minutes['1']}m · P2: ${d.sla_minutes['2']}m · P3: ${d.sla_minutes['3']}m. Applies to newly assigned tickets.`,
+  };
+
+  async function commitSave(key: string, value: unknown) {
+    setSaving(key);
+    setConfirm(null);
+    try {
+      await api.updateAssignmentRule(key, value);
+      setSaved(draft);
+      const msg = draft ? RULE_SAVE_MESSAGES[key]?.(draft) ?? 'Changes saved.' : 'Changes saved.';
+      showToast(msg, 'success');
+    } catch (e) {
+      setDraft(saved);
+      const raw = e instanceof Error ? e.message : 'Unknown error';
+      const friendly =
+        raw.includes('403') || raw.includes('Insufficient') ? 'You do not have permission to change this setting.' :
+        raw.includes('401') || raw.includes('Missing token')  ? 'Your session has expired. Please log in again.' :
+        raw.includes('500') || raw.includes('Server error')   ? 'A server error occurred. The change was not applied — please try again.' :
+        raw.includes('Failed to fetch') || raw.includes('NetworkError') ? 'Could not reach the server. Check your connection and try again.' :
+        `Save failed: ${raw}`;
+      showToast(friendly, 'error');
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  function requestSave(key: string, value: unknown, title: string, description: string) {
+    setConfirm({ title, description, onConfirm: () => commitSave(key, value) });
+  }
+
+  function isDirty(key: keyof Rules): boolean {
+    if (!saved || !draft) return false;
+    return JSON.stringify(saved[key]) !== JSON.stringify(draft[key]);
+  }
+
+  if (loading) return <div className="flex items-center gap-2 text-sm text-text-muted"><Spinner size="sm" /> Loading rules…</div>;
+  if (error)   return <ErrorBanner>{error}</ErrorBanner>;
+  if (!draft)  return null;
+
+  const catDirty   = isDirty('category_team_map');
+  const stickyDirty = isDirty('sticky_agent_hours');
+  const vipDirty   = isDirty('vip_auto_priority1');
+  const slaDirty   = isDirty('sla_minutes');
+
+  return (
+    <div className="space-y-4">
+      {toast && (
+        <div className={`fixed bottom-4 right-4 z-50 flex items-start gap-2.5 px-4 py-3 rounded-lg shadow-lg max-w-sm ring-1 text-xs leading-relaxed ${
+          toast.type === 'error'
+            ? 'bg-red-950/90 ring-red-800/60 text-red-200'
+            : 'bg-surface-1 ring-surface-5 text-text-primary'
+        }`}>
+          {toast.type === 'error' ? (
+            <svg className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m9.303 3.376c.866 1.5-.217 3.374-1.948 3.374H4.645c-1.73 0-2.813-1.874-1.948-3.374L10.052 3.378c.866-1.5 3.032-1.5 3.898 0L21.303 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+          ) : (
+            <svg className="w-3.5 h-3.5 text-accent-green shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          )}
+          <span>{toast.msg}</span>
+          <button onClick={() => setToast(null)} className="ml-auto shrink-0 opacity-50 hover:opacity-100 transition-opacity">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Confirmation modal */}
+      {confirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-surface-1 ring-1 ring-surface-5 rounded-xl shadow-modal w-full max-w-sm mx-4 p-6">
+            <h3 className="text-sm font-semibold text-text-primary mb-1">{confirm.title}</h3>
+            <p className="text-xs text-text-secondary leading-relaxed mb-5">{confirm.description}</p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirm(null)}
+                className="text-xs px-3 py-1.5 rounded-md bg-surface-3 hover:bg-surface-4 text-text-secondary transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirm.onConfirm}
+                className="text-xs px-3 py-1.5 rounded-md bg-brand hover:bg-brand-dim text-white transition-colors"
+              >
+                Apply Change
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Category → Team routing */}
+      <RuleCard editable title="Category → Team Routing" subtitle="Tickets are routed to a team based on their category. Unmatched categories fall back to CS.">
+        <table className="w-full text-xs mb-4">
+          <thead>
+            <tr className="border-b border-surface-5">
+              {['Category', 'Routed To'].map(h => (
+                <th key={h} className="text-left text-[10px] font-semibold text-text-muted uppercase tracking-wide pb-2 pr-4">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-surface-5">
+            {Object.entries(draft.category_team_map).map(([cat, team]) => (
+              <tr key={cat} className="hover:bg-surface-3 transition-colors">
+                <td className="py-2 pr-4 text-text-primary font-medium">{CATEGORY_LABELS[cat] ?? cat}</td>
+                <td className="py-2">
+                  <select
+                    value={team}
+                    disabled={saving === 'category_team_map'}
+                    onChange={e => setDraft(d => d ? { ...d, category_team_map: { ...d.category_team_map, [cat]: e.target.value } } : d)}
+                    className="text-xs bg-surface-3 border border-surface-5 text-text-primary rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand"
+                  >
+                    {KNOWN_TEAMS.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </td>
+              </tr>
+            ))}
+            <tr className="opacity-50">
+              <td className="py-2 pr-4 text-text-secondary italic">All other categories</td>
+              <td className="py-2"><span className="px-2 py-0.5 rounded-full bg-surface-4 text-text-muted text-[11px]">cs (fallback)</span></td>
+            </tr>
+          </tbody>
+        </table>
+        <SaveBar
+          dirty={catDirty}
+          saving={saving === 'category_team_map'}
+          onDiscard={() => setDraft(d => d ? { ...d, category_team_map: saved!.category_team_map } : d)}
+          onSave={() => requestSave(
+            'category_team_map', draft.category_team_map,
+            'Update Category → Team Routing',
+            'This will immediately affect how all incoming tickets are routed to teams. Changes take effect on the next ticket created.'
+          )}
+        />
+      </RuleCard>
+
+      {/* Agent Routing Strategy — system locked */}
+      <RuleCard title="Agent Routing Strategy" subtitle="Controls how tickets are distributed to available agents within a team.">
+        <div className="space-y-0">
+          {[
+            { label: 'Round-Robin (FR-02)', badge: 'Least recently used', desc: 'Ticket goes to the Available agent with the oldest last-assignment time who is under capacity.' },
+            { label: 'Queue Fallback',      badge: 'Priority-aware',      desc: 'If no agent is available the ticket is queued. VIP tickets go to the front, others to the back.' },
+          ].map(r => (
+            <div key={r.label} className="flex gap-3 py-2.5 border-b border-surface-5 last:border-0">
+              <div className="w-8 shrink-0 rounded-full bg-brand relative mt-0.5" style={{ height: 18 }}>
+                <div className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-white shadow" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-xs font-medium text-text-primary">{r.label}</span>
+                  <span className="text-[9px] bg-surface-3 text-text-muted px-1.5 py-0.5 rounded">{r.badge}</span>
+                </div>
+                <p className="text-[11px] text-text-muted leading-relaxed">{r.desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </RuleCard>
+
+      {/* Sticky Agent */}
+      <RuleCard editable title="Sticky Agent (FR-04)" subtitle="Re-assigns returning customers to the same agent if they return within the configured window and the agent is available.">
+        <div className="flex items-center gap-4 mb-4">
+          <div className="w-8 shrink-0 rounded-full bg-brand relative" style={{ height: 18 }}>
+            <div className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-white shadow" />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-text-secondary">Return window:</span>
+            <input
+              type="number"
+              min={1}
+              max={72}
+              value={draft.sticky_agent_hours}
+              disabled={saving === 'sticky_agent_hours'}
+              onChange={e => setDraft(d => d ? { ...d, sticky_agent_hours: Number(e.target.value) } : d)}
+              className="w-16 text-xs bg-surface-3 border border-surface-5 text-text-primary rounded px-2 py-1 text-center focus:outline-none focus:ring-1 focus:ring-brand"
+            />
+            <span className="text-xs text-text-muted">hours</span>
+          </div>
+        </div>
+        <SaveBar
+          dirty={stickyDirty}
+          saving={saving === 'sticky_agent_hours'}
+          onDiscard={() => setDraft(d => d ? { ...d, sticky_agent_hours: saved!.sticky_agent_hours } : d)}
+          onSave={() => requestSave(
+            'sticky_agent_hours', draft.sticky_agent_hours,
+            'Update Sticky Agent Window',
+            `Returning customers will be matched to their previous agent only if they return within ${draft.sticky_agent_hours} hour${draft.sticky_agent_hours !== 1 ? 's' : ''}. This affects all new tickets.`
+          )}
+        />
+      </RuleCard>
+
+      {/* VIP Override */}
+      <RuleCard editable title="VIP Auto-Priority (FR-05)" subtitle="When enabled, tickets from VIP-tier customers are automatically promoted to Priority 1 on creation.">
+        <div className="flex items-center gap-3 mb-4">
+          <Toggle
+            on={draft.vip_auto_priority1}
+            saving={saving === 'vip_auto_priority1'}
+            onToggle={() => setDraft(d => d ? { ...d, vip_auto_priority1: !d.vip_auto_priority1 } : d)}
+          />
+          <p className="text-xs text-text-secondary">
+            {draft.vip_auto_priority1
+              ? 'Enabled — VIP customers will be auto-promoted to Priority 1 on ticket creation.'
+              : 'Disabled — VIP customers use the same priority as any other customer.'}
+          </p>
+        </div>
+        <SaveBar
+          dirty={vipDirty}
+          saving={saving === 'vip_auto_priority1'}
+          onDiscard={() => setDraft(d => d ? { ...d, vip_auto_priority1: saved!.vip_auto_priority1 } : d)}
+          onSave={() => requestSave(
+            'vip_auto_priority1', draft.vip_auto_priority1,
+            `${draft.vip_auto_priority1 ? 'Enable' : 'Disable'} VIP Auto-Priority`,
+            draft.vip_auto_priority1
+              ? 'VIP customers will automatically receive Priority 1 on every new ticket. This affects SLA deadlines and queue position.'
+              : 'VIP customers will no longer be auto-promoted to Priority 1. Their tickets will follow standard priority rules.'
+          )}
+        />
+      </RuleCard>
+
+      {/* SLA Deadlines */}
+      <RuleCard editable title="SLA Deadlines" subtitle="Time-to-first-response targets applied at the moment a ticket is assigned to an agent.">
+        <div className="space-y-0 mb-4">
+          {SLA_META.map(({ priority, label, badge }) => (
+            <div key={priority} className="flex items-center justify-between py-2.5 border-b border-surface-5 last:border-0">
+              <span className="text-xs text-text-primary">{label}</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={draft.sla_minutes[priority] ?? ''}
+                  disabled={saving === 'sla_minutes'}
+                  onChange={e => setDraft(d => d ? { ...d, sla_minutes: { ...d.sla_minutes, [priority]: Number(e.target.value) } } : d)}
+                  className="w-16 text-xs bg-surface-3 border border-surface-5 text-text-primary rounded px-2 py-1 text-center focus:outline-none focus:ring-1 focus:ring-brand"
+                />
+                <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${badge}`}>min</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <SaveBar
+          dirty={slaDirty}
+          saving={saving === 'sla_minutes'}
+          onDiscard={() => setDraft(d => d ? { ...d, sla_minutes: saved!.sla_minutes } : d)}
+          onSave={() => requestSave(
+            'sla_minutes', draft.sla_minutes,
+            'Update SLA Deadlines',
+            'New SLA targets will apply to all tickets assigned from this point forward. Tickets already in progress keep their existing deadlines.'
+          )}
+        />
+      </RuleCard>
+    </div>
+  );
+}
+
+function SaveBar({ dirty, saving, onSave, onDiscard }: { dirty: boolean; saving: boolean; onSave: () => void; onDiscard: () => void }) {
+  return (
+    <div className={`flex items-center justify-end gap-2 pt-3 border-t border-surface-5 transition-opacity ${dirty ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+      <button
+        onClick={onDiscard}
+        disabled={saving}
+        className="text-xs px-3 py-1.5 rounded-md bg-surface-3 hover:bg-surface-4 text-text-secondary transition-colors disabled:opacity-50"
+      >
+        Discard
+      </button>
+      <button
+        onClick={onSave}
+        disabled={!dirty || saving}
+        className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-brand hover:bg-brand-dim text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {saving && <Spinner size="sm" />}
+        Save Changes
+      </button>
     </div>
   );
 }

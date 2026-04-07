@@ -11,6 +11,7 @@ import AnalyticsDashboard from './components/AnalyticsDashboard';
 import AdminSettings from './components/AdminSettings';
 import AIStudio from './components/AIStudio';
 import MetricsDashboard from './components/MetricsDashboard';
+import InsightsDashboard from './components/InsightsDashboard';
 import HomeDashboard from './components/HomeDashboard';
 import KnowledgeBase from './components/KnowledgeBase';
 import User360 from './components/User360';
@@ -344,6 +345,12 @@ const Icons = {
         d="M7.5 14.25v2.25m3-4.5v4.5m3-6.75v6.75m3-9v9M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" />
     </svg>
   ),
+  insights: (
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-[18px] h-[18px]">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+    </svg>
+  ),
   studio: (
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-[18px] h-[18px]">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
@@ -419,8 +426,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/',           label: 'Home',       icon: Icons.home,       permission: 'section.home',       shortcut: '⌘2' },
   { to: '/inbox',      label: 'Inbox',      icon: Icons.inbox,      permission: 'section.inbox',      shortcut: '⌘1' },
   { to: '/supervisor', label: 'Supervisor', icon: Icons.supervisor, permission: 'section.supervisor', shortcut: '⌘3' },
-  { to: '/analytics',  label: 'Analytics',  icon: Icons.analytics,  permission: 'section.analytics',  shortcut: '⌘4' },
-  { to: '/metrics',    label: 'Metrics',    icon: Icons.metrics,    permission: 'section.metrics',    shortcut: '⌘5' },
+  { to: '/insights',   label: 'Insights',   icon: Icons.insights,   permission: 'section.analytics',  shortcut: '⌘4' },
   { to: '/knowledge',  label: 'Knowledge Base',  icon: Icons.knowledge,  permission: 'section.knowledge' },
   { to: '/users',      label: 'User360',    icon: Icons.users,      permission: 'section.users' },
   { to: '/studio',     label: 'AI Studio',  icon: Icons.studio,     permission: 'section.studio' },
@@ -431,8 +437,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/':           'Home',
   '/inbox':      'Inbox',
   '/supervisor': 'Supervisor',
-  '/analytics':  'Analytics',
-  '/metrics':    'Metrics',
+  '/insights':   'Insights',
   '/knowledge':  'Knowledge Base',
   '/users':      'User360',
   '/studio':     'AI Studio',
@@ -986,6 +991,11 @@ export default function App() {
                   <AdminSettings currentUser={user} />
                 </PermissionGuard>
               } />
+              <Route path="/admin/:tab" element={
+                <PermissionGuard permission="section.admin" user={user}>
+                  <AdminSettings currentUser={user} />
+                </PermissionGuard>
+              } />
               <Route path="/studio" element={
                 <PermissionGuard permission="section.studio" user={user}>
                   <AIStudio />
@@ -994,6 +1004,11 @@ export default function App() {
               <Route path="/metrics" element={
                 <PermissionGuard permission="section.metrics" user={user}>
                   <MetricsDashboard />
+                </PermissionGuard>
+              } />
+              <Route path="/insights" element={
+                <PermissionGuard permission="section.analytics" user={user}>
+                  <InsightsDashboard />
                 </PermissionGuard>
               } />
               <Route path="/knowledge" element={

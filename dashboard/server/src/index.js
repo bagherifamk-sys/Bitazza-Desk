@@ -15,11 +15,16 @@ const copilotRouter    = require('./routes/copilot');
 const cannedRouter     = require('./routes/canned');
 const analyticsRouter  = require('./routes/analytics');
 const metricsRouter    = require('./routes/metrics');
+const insightsRouter   = require('./routes/insights');
 const studioRouter     = require('./routes/studio');
 const coreRouter       = require('./routes/core');
-const rolesRouter      = require('./routes/roles');
-const knowledgeRouter  = require('./routes/knowledge');
-const usersRouter      = require('./routes/users');
+const rolesRouter          = require('./routes/roles');
+const knowledgeRouter      = require('./routes/knowledge');
+const usersRouter          = require('./routes/users');
+const assignmentRulesRouter = require('./routes/assignmentRules');
+
+// Auth middleware
+const { authenticate, requirePermission } = require('./middleware/auth');
 
 // Libs
 const sockets = require('./lib/sockets');
@@ -55,11 +60,13 @@ app.use('/api/copilot',     copilotRouter);
 app.use('/api/canned-responses', cannedRouter);
 app.use('/api/analytics',       analyticsRouter);
 app.use('/api/metrics',         metricsRouter);
+app.use('/api/insights',        insightsRouter);
 app.use('/api/studio',          studioRouter);
 app.use('/api/core',            coreRouter);
 app.use('/api/roles',           rolesRouter);
 app.use('/api/knowledge',       knowledgeRouter);
-app.use('/api/users',           usersRouter);
+app.use('/api/users', authenticate, requirePermission('section.users'), usersRouter);
+app.use('/api/assignment-rules', assignmentRulesRouter);
 
 // Health check — must be before static/SPA fallback
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));

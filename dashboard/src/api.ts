@@ -154,6 +154,13 @@ export const api = {
   deleteRole: (name: string) =>
     req(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
+  // Assignment Rules
+  getAssignmentRules: () =>
+    req<Record<string, { value: unknown; updated_at: string; updated_by: string | null }>>('/api/assignment-rules'),
+
+  updateAssignmentRule: (key: string, value: unknown) =>
+    req(`/api/assignment-rules/${encodeURIComponent(key)}`, { method: 'PATCH', body: JSON.stringify({ value }) }),
+
   // Supervisor
   getSupervisorLive: () =>
     req<{ agents: Agent[]; queues: QueueItem[]; sla_risk: SLARiskTicket[]; stats: SupervisorStats }>(
@@ -166,6 +173,14 @@ export const api = {
       Object.fromEntries(Object.entries(filters).filter(([, v]) => v != null)) as Record<string, string>
     );
     return req<Record<string, unknown>>(`/api/analytics?${params}`);
+  },
+
+  // Insights — unified analytics + metrics in one call
+  getInsights: (filters: { range?: string; channel?: string; agent_id?: string; category?: string; from?: string; to?: string }) => {
+    const params = new URLSearchParams(
+      Object.fromEntries(Object.entries(filters).filter(([, v]) => v != null && v !== '')) as Record<string, string>
+    );
+    return req<Record<string, unknown>>(`/api/insights?${params}`);
   },
 
   // Canned responses

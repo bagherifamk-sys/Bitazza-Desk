@@ -183,7 +183,7 @@ router.get('/', async (req, res) => {
       SELECT
         t.id, t.status, t.priority, t.channel, t.category, t.tags,
         t.sla_deadline, t.sla_breached, t.created_at, t.updated_at,
-        t.assigned_to, t.ai_persona,
+        t.assigned_to, t.ai_persona, t.csat_score,
         c.id          AS customer_id,
         c.name        AS customer_name,
         c.email       AS customer_email,
@@ -216,6 +216,7 @@ router.get('/', async (req, res) => {
       assigned_to:      t.assigned_to,
       assigned_to_name: t.assigned_to_name,
       ai_persona:       t.ai_persona ?? null,
+      csat_score:       t.csat_score ?? null,
       last_message:     t.last_message,
       last_message_at:  t.last_message_at,
       customer: {

@@ -308,6 +308,20 @@ export default function PropertiesPanel({ ticket, onUpdate, onAcceptDraft, onSel
                 <PropRow label="Created" value={ticket.created_at ? new Date(
                   typeof ticket.created_at === 'number' ? ticket.created_at * 1000 : ticket.created_at
                 ).toLocaleString() : '—'} />
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-muted">CSAT</span>
+                  {ticket.csat_score != null ? (
+                    <span className={`text-xs font-medium flex items-center gap-1 ${
+                      ticket.csat_score >= 4 ? 'text-accent-green' :
+                      ticket.csat_score === 3 ? 'text-accent-amber' : 'text-brand'
+                    }`}>
+                      {'★'.repeat(ticket.csat_score)}{'☆'.repeat(5 - ticket.csat_score)}
+                      <span className="text-text-muted font-normal ml-0.5">({ticket.csat_score}/5)</span>
+                    </span>
+                  ) : (
+                    <span className="text-xs text-text-muted">—</span>
+                  )}
+                </div>
               </div>
             </Section>
 

@@ -127,6 +127,7 @@ export interface Ticket {
   last_message_at?: string | number | null;
   sentiment?: Sentiment | null;
   collision_agent_ids?: string[];
+  csat_score?: number | null;
 }
 
 export interface TicketDetail extends Ticket {

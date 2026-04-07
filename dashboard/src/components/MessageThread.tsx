@@ -348,6 +348,13 @@ export default function MessageThread({ ticketId, ws, onStatusChange, pendingDra
     onStatusChange();
   };
 
+  const requestResolution = async () => {
+    if (!ticket) return;
+    await api.requestResolution(ticket.id);
+    await load();
+    onStatusChange();
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full bg-surface-0">
@@ -394,7 +401,7 @@ export default function MessageThread({ ticketId, ws, onStatusChange, pendingDra
 
         {/* Status buttons */}
         <div className="flex items-center gap-1 flex-wrap justify-end shrink-0">
-          {STATUS_OPTIONS
+{STATUS_OPTIONS
             .filter(s => s === 'Escalated' ? canEscalate : canClose)
             .map(s => (
               <button key={s} onClick={() => changeStatus(s)} disabled={ticket.status === s}
@@ -474,6 +481,19 @@ export default function MessageThread({ ticketId, ws, onStatusChange, pendingDra
                 </button>
               )}
             </div>
+
+            {/* Request Closure chip */}
+            {canReply && !['Closed_Resolved', 'Closed_Unresponsive'].includes(ticket.status) && (
+              <>
+                <div className="w-px h-4 bg-surface-5" />
+                <button
+                  onClick={requestResolution}
+                  className="text-xs px-2.5 py-1.5 rounded-md ring-1 ring-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 whitespace-nowrap transition-colors active:scale-[0.98]"
+                >
+                  ✓ Request Closure
+                </button>
+              </>
+            )}
 
             {/* Channel pills — only in Reply mode */}
             {!isNote && (

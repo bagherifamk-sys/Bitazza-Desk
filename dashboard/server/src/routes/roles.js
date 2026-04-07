@@ -18,6 +18,11 @@ const ALL_PERMISSIONS = [
   'section.knowledge',
   'section.users',
   'section.admin',
+  'user360.identity',
+  'user360.kyc',
+  'user360.restrictions',
+  'user360.financials',
+  'user360.tickets',
   'inbox.reply',
   'inbox.assign',
   'inbox.close',
@@ -36,6 +41,7 @@ const ADMIN_PERMISSIONS = new Set([
   'section.home', 'section.inbox', 'section.supervisor', 'section.analytics', 'section.knowledge', 'section.users', 'section.admin',
   'inbox.reply', 'inbox.assign', 'inbox.close', 'inbox.escalate', 'inbox.internal_note', 'inbox.claim',
   'admin.agents', 'admin.roles', 'admin.settings',
+  'user360.identity', 'user360.kyc', 'user360.restrictions', 'user360.financials', 'user360.tickets',
 ]);
 
 function ceilingPermissions(callerRole, requestedPerms) {

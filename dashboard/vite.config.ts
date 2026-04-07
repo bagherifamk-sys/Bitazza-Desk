@@ -26,6 +26,11 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
         runtimeCaching: [
           {
+            // Never cache real-time supervisor or live endpoints
+            urlPattern: /^\/api\/supervisor\//,
+            handler: 'NetworkOnly',
+          },
+          {
             urlPattern: /^\/api\//,
             handler: 'NetworkFirst',
             options: {

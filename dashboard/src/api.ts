@@ -102,6 +102,9 @@ export const api = {
   claimTicket: (id: string) =>
     req(`/api/tickets/${id}/claim`, { method: 'POST' }),
 
+  requestResolution: (id: string) =>
+    req(`/api/tickets/${id}/resolve-request`, { method: 'POST' }),
+
   // Agents
   getAgents: (includeInactive = false) =>
     req<Agent[]>(`/api/agents${includeInactive ? '?include_inactive=true' : ''}`),
@@ -298,7 +301,7 @@ export function createWS(onEvent: (e: unknown) => void): WebSocket {
   const EVENTS = [
     'new_message', 'status_change', 'ticket:updated', 'ticket:assigned',
     'ticket_assigned', 'agent_typing', 'agent_presence', 'sla:breach',
-    'whisper', 'supervisor_joined',
+    'whisper', 'supervisor_joined', 'ticket:resolve_request',
   ];
 
   EVENTS.forEach(ev => {

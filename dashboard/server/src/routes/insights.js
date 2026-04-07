@@ -159,13 +159,34 @@ router.get('/', async (req, res) => {
             COUNT(*) FILTER (WHERE t.channel = 'web')  AS bot,
             COUNT(*) FILTER (WHERE t.channel != 'web') AS human
           FROM tickets t WHERE ${wt} GROUP BY DATE(t.created_at)
+        ),
+        per_bot AS (
+          SELECT
+            COALESCE(t.ai_persona->>'ai_name', 'Unknown Bot') AS bot_name,
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresponsive'))::int AS resolved,
+            COUNT(*) FILTER (WHERE t.status = 'Escalated')::int AS escalated,
+            AVG(t.csat_score)::float AS csat_avg
+          FROM tickets t WHERE ${wt} AND t.ai_persona IS NOT NULL
+          GROUP BY t.ai_persona->>'ai_name' ORDER BY total DESC LIMIT 20
         )
         SELECT
           (SELECT COUNT(*)::float FROM tickets t WHERE ${wt} AND t.channel = 'web' AND t.status = 'Closed_Resolved')
             / NULLIF((SELECT COUNT(*) FROM tickets t WHERE ${wt} AND t.channel = 'web'), 0) AS resolution_rate,
           (SELECT COUNT(*)::float FROM tickets t WHERE ${wt} AND t.status = 'Escalated')
             / NULLIF((SELECT COUNT(*) FROM tickets t WHERE ${wt}), 0) AS handoff_rate,
-          (SELECT json_agg(json_build_object('date', day, 'bot', bot, 'human', human) ORDER BY day) FROM daily) AS by_day
+          (SELECT COUNT(*)::int FROM tickets t WHERE ${wt} AND t.ai_persona IS NOT NULL) AS bot_total,
+          (SELECT COUNT(*)::int FROM tickets t WHERE ${wt} AND t.ai_persona IS NULL AND t.assigned_to IS NOT NULL) AS human_total,
+          (SELECT json_agg(json_build_object('date', day, 'bot', bot, 'human', human) ORDER BY day) FROM daily) AS by_day,
+          (SELECT json_agg(json_build_object(
+            'bot_name', bot_name,
+            'total', total,
+            'resolved', resolved,
+            'escalated', escalated,
+            'resolution_rate', CASE WHEN total > 0 THEN resolved::float / total ELSE 0 END,
+            'escalation_rate', CASE WHEN total > 0 THEN escalated::float / total ELSE 0 END,
+            'csat_avg', csat_avg
+          ) ORDER BY total DESC) FROM per_bot) AS by_bot
       `),
 
       // ── CSAT ──────────────────────────────────────────────────────────────
@@ -196,42 +217,128 @@ router.get('/', async (req, res) => {
       `),
     ];
 
-    // Agent breakdown — only run when caller has section.metrics
-    const agentQueries = canSeeAgentBreakdown ? [
+    // ── Supervisor queries — only run when caller has section.metrics ──────────
+    const supervisorQueries = canSeeAgentBreakdown ? [
+
+      // [0] Agent leaderboard — tickets handled, FCR, SLA, FRT, AHT, CSAT
       q(`
-        SELECT u.name,
+        WITH agent_tickets AS (
+          SELECT t.*, u.name AS agent_name
+          FROM tickets t JOIN users u ON t.assigned_to = u.id
+          WHERE ${wt}
+        ),
+        fcr AS (
+          -- First-contact resolved: closed and never reopened (no status change back to Open/In_Progress after first close)
+          SELECT t.assigned_to,
+            COUNT(*) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresponsive')
+              AND NOT EXISTS (
+                SELECT 1 FROM audit_logs al
+                WHERE al.target_id = t.id
+                  AND al.action = 'ticket_reopened'
+              ))::int AS fcr_count
+          FROM tickets t WHERE ${wt} AND t.assigned_to IS NOT NULL
+          GROUP BY t.assigned_to
+        )
+        SELECT
+          u.id AS agent_id,
+          u.name,
+          COUNT(t.id)::int                                                         AS total,
+          COUNT(t.id) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresponsive'))::int AS resolved,
+          COALESCE(fcr.fcr_count, 0)                                               AS fcr,
+          COUNT(t.id) FILTER (WHERE t.sla_breached = true)::int                   AS sla_breaches,
+          (COUNT(t.id) FILTER (WHERE t.sla_breached = true))::float
+            / NULLIF(COUNT(t.id), 0)                                               AS sla_breach_rate,
           AVG(EXTRACT(EPOCH FROM (
             (SELECT m.created_at FROM messages m
              WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot')
              ORDER BY m.created_at ASC LIMIT 1)
             - t.created_at
-          )))::float AS avg_s
-        FROM tickets t JOIN users u ON t.assigned_to = u.id
+          )))::float                                                                AS avg_frt_s,
+          AVG(CASE WHEN t.status IN ('Closed_Resolved','Closed_Unresponsive')
+            THEN EXTRACT(EPOCH FROM (t.updated_at - t.created_at)) END)::float    AS avg_aht_s,
+          AVG(t.csat_score)::float                                                 AS csat_avg,
+          COUNT(t.id) FILTER (WHERE t.csat_score IS NOT NULL)::int                AS csat_count
+        FROM tickets t
+        JOIN users u ON t.assigned_to = u.id
+        LEFT JOIN fcr ON fcr.assigned_to = u.id
         WHERE ${wt}
-          AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
-        GROUP BY u.name ORDER BY avg_s ASC LIMIT 10
+        GROUP BY u.id, u.name, fcr.fcr_count
+        ORDER BY total DESC LIMIT 30
       `),
+
+      // [1] SLA breach breakdown — by agent and by category
       q(`
-        SELECT t.channel,
-          AVG(EXTRACT(EPOCH FROM (t.updated_at - t.created_at)))::float AS avg_s
-        FROM tickets t WHERE ${wt}
-          AND t.status IN ('Closed_Resolved','Closed_Unresponsive')
-          AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
-        GROUP BY t.channel ORDER BY t.channel
+        SELECT
+          (SELECT json_agg(json_build_object('name', name, 'breaches', breaches, 'total', total,
+            'breach_rate', CASE WHEN total > 0 THEN breaches::float / total ELSE 0 END) ORDER BY breaches DESC)
+           FROM (
+             SELECT u.name, COUNT(*) FILTER (WHERE t.sla_breached)::int AS breaches, COUNT(*)::int AS total
+             FROM tickets t JOIN users u ON t.assigned_to = u.id
+             WHERE ${wt} GROUP BY u.name ORDER BY breaches DESC LIMIT 15
+           ) a) AS by_agent,
+          (SELECT json_agg(json_build_object('category', category, 'breaches', breaches, 'total', total,
+            'breach_rate', CASE WHEN total > 0 THEN breaches::float / total ELSE 0 END) ORDER BY breaches DESC)
+           FROM (
+             SELECT category, COUNT(*) FILTER (WHERE sla_breached)::int AS breaches, COUNT(*)::int AS total
+             FROM tickets WHERE ${w} AND category IS NOT NULL
+             GROUP BY category ORDER BY breaches DESC LIMIT 10
+           ) c) AS by_category
       `),
+
+      // [2] Queue health — backlog age buckets, unassigned, pending_customer, reopened rate
       q(`
-        SELECT u.name,
-          AVG(t.csat_score)::float AS avg,
-          COUNT(*) FILTER (WHERE t.csat_score IS NOT NULL)::int AS count
-        FROM tickets t JOIN users u ON t.assigned_to = u.id
-        WHERE ${wt} AND t.csat_score IS NOT NULL
-        GROUP BY u.name ORDER BY avg DESC LIMIT 10
+        SELECT
+          COUNT(*) FILTER (WHERE status NOT IN ('Closed_Resolved','Closed_Unresponsive'))::int  AS open_total,
+          COUNT(*) FILTER (WHERE status NOT IN ('Closed_Resolved','Closed_Unresponsive')
+            AND EXTRACT(EPOCH FROM (NOW() - created_at)) < 3600)::int                           AS age_lt_1h,
+          COUNT(*) FILTER (WHERE status NOT IN ('Closed_Resolved','Closed_Unresponsive')
+            AND EXTRACT(EPOCH FROM (NOW() - created_at)) BETWEEN 3600 AND 14400)::int           AS age_1h_4h,
+          COUNT(*) FILTER (WHERE status NOT IN ('Closed_Resolved','Closed_Unresponsive')
+            AND EXTRACT(EPOCH FROM (NOW() - created_at)) BETWEEN 14400 AND 86400)::int          AS age_4h_24h,
+          COUNT(*) FILTER (WHERE status NOT IN ('Closed_Resolved','Closed_Unresponsive')
+            AND EXTRACT(EPOCH FROM (NOW() - created_at)) > 86400)::int                          AS age_gt_24h,
+          COUNT(*) FILTER (WHERE status NOT IN ('Closed_Resolved','Closed_Unresponsive')
+            AND assigned_to IS NULL AND ai_persona IS NULL)::int                                AS unassigned,
+          COUNT(*) FILTER (WHERE status = 'Pending_Customer')::int                             AS pending_customer,
+          (SELECT COUNT(*)::int FROM audit_logs al WHERE al.action = 'ticket_reopened'
+            AND al.created_at >= NOW() - INTERVAL '30 days') AS reopened_30d,
+          (SELECT COUNT(*)::int FROM tickets t2
+            WHERE t2.status IN ('Closed_Resolved','Closed_Unresponsive')
+              AND t2.created_at >= NOW() - INTERVAL '30 days') AS closed_30d
+        FROM tickets
+        WHERE ${w}
       `),
-    ] : [null, null, null];
+
+      // [3] Peak hours heatmap — tickets by hour-of-day (0–23) × weekday (0=Sun … 6=Sat)
+      q(`
+        SELECT
+          EXTRACT(DOW  FROM created_at)::int AS dow,
+          EXTRACT(HOUR FROM created_at)::int AS hour,
+          COUNT(*)::int AS count
+        FROM tickets WHERE ${w}
+        GROUP BY dow, hour ORDER BY dow, hour
+      `),
+
+      // [4] Low CSAT drill-down — tickets rated 1 or 2
+      q(`
+        SELECT
+          t.id, t.csat_score, t.channel, t.category,
+          t.created_at, t.updated_at,
+          u.name AS agent_name,
+          c.name AS customer_name
+        FROM tickets t
+        LEFT JOIN users u ON t.assigned_to = u.id
+        LEFT JOIN customers c ON t.customer_id = c.id
+        WHERE ${wt} AND t.csat_score IN (1, 2)
+        ORDER BY t.csat_score ASC, t.updated_at DESC
+        LIMIT 50
+      `),
+
+    ] : [null, null, null, null, null];
 
     const [summary, volume, frt, resolution, bot, csat, intent,
-           frtByAgent, ahtByChannel, csatByAgent] =
-      await Promise.all([...queries, ...agentQueries]);
+           agentLeaderboard, slaBreakdown, queueHealth, peakHours, lowCsat] =
+      await Promise.all([...queries, ...supervisorQueries]);
 
     res.json({
       summary: {
@@ -265,7 +372,10 @@ router.get('/', async (req, res) => {
       bot: {
         resolution_rate: Number(bot.rows[0]?.resolution_rate ?? 0),
         handoff_rate:    Number(bot.rows[0]?.handoff_rate    ?? 0),
-        by_day:          bot.rows[0]?.by_day ?? [],
+        bot_total:       bot.rows[0]?.bot_total   ?? 0,
+        human_total:     bot.rows[0]?.human_total ?? 0,
+        by_day:          bot.rows[0]?.by_day  ?? [],
+        by_bot:          bot.rows[0]?.by_bot  ?? [],
       },
       csat: {
         avg:          csat.rows[0]?.avg          ?? null,
@@ -276,11 +386,25 @@ router.get('/', async (req, res) => {
       intent: {
         top: intent.rows,
       },
-      agent_breakdown: canSeeAgentBreakdown ? {
-        frt_by_agent:   frtByAgent?.rows   ?? [],
-        aht_by_channel: ahtByChannel?.rows ?? [],
-        csat_by_agent:  csatByAgent?.rows  ?? [],
+      // Supervisor-only sections (null when caller lacks section.metrics)
+      agent_leaderboard: canSeeAgentBreakdown ? (agentLeaderboard?.rows ?? []) : null,
+      sla_breakdown: canSeeAgentBreakdown ? {
+        by_agent:    slaBreakdown?.rows[0]?.by_agent    ?? [],
+        by_category: slaBreakdown?.rows[0]?.by_category ?? [],
       } : null,
+      queue_health: canSeeAgentBreakdown ? {
+        open_total:       queueHealth?.rows[0]?.open_total       ?? 0,
+        age_lt_1h:        queueHealth?.rows[0]?.age_lt_1h        ?? 0,
+        age_1h_4h:        queueHealth?.rows[0]?.age_1h_4h        ?? 0,
+        age_4h_24h:       queueHealth?.rows[0]?.age_4h_24h       ?? 0,
+        age_gt_24h:       queueHealth?.rows[0]?.age_gt_24h       ?? 0,
+        unassigned:       queueHealth?.rows[0]?.unassigned        ?? 0,
+        pending_customer: queueHealth?.rows[0]?.pending_customer  ?? 0,
+        reopened_30d:     queueHealth?.rows[0]?.reopened_30d      ?? 0,
+        closed_30d:       queueHealth?.rows[0]?.closed_30d        ?? 0,
+      } : null,
+      peak_hours:    canSeeAgentBreakdown ? (peakHours?.rows ?? []) : null,
+      low_csat:      canSeeAgentBreakdown ? (lowCsat?.rows  ?? []) : null,
     });
   } catch (err) {
     console.error('[insights] error:', err.message);

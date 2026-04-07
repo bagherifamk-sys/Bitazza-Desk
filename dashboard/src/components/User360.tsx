@@ -1,5 +1,6 @@
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useCallback, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { usePermissions } from '../PermissionContext';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -108,6 +109,18 @@ interface TicketRow {
 
 type Tab = 'overview' | 'transactions' | 'spot' | 'futures' | 'tickets';
 type SearchBy = 'uid' | 'email' | 'phone';
+
+interface CustomerRow {
+  id: number;
+  bitazza_uid?: string;
+  external_id?: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  tier?: string;
+  kyc_status?: string;
+  created_at: string;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -426,6 +439,9 @@ function PortfolioChart({ balances, loading }: { balances: Balance[] | null; loa
 
 export default function User360() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const permissions = usePermissions();
+  const hasPerm = (p: string) => permissions.includes(p);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchBy, setSearchBy] = useState<SearchBy>('uid');
   const [searching, setSearching] = useState(false);
@@ -456,6 +472,55 @@ export default function User360() {
   const [balances, setBalances] = useState<Balance[] | null>(null);
   const [balancesLoading, setBalancesLoading] = useState(false);
 
+  // Customer list (shown when no user selected)
+  const [custList, setCustList] = useState<Page<CustomerRow> | null>(null);
+  const [custPage, setCustPage] = useState(1);
+  const [custLoading, setCustLoading] = useState(false);
+
+  const loadCustomers = useCallback(async (page: number) => {
+    setCustLoading(true);
+    try {
+      const data = await apiFetch(`/api/users?page=${page}&page_size=25`);
+      setCustList(data);
+      setCustPage(page);
+    } catch { /* non-fatal */ }
+    finally { setCustLoading(false); }
+  }, []);
+
+  useEffect(() => { loadCustomers(1); }, [loadCustomers]);
+
+  const openUser = useCallback(async (uid: string, pushUrl = true) => {
+    if (pushUrl) setSearchParams({ uid });
+    setSearching(true);
+    setSearchError('');
+    setUser(null);
+    setActiveTab('overview');
+    setTxData(null); setSpotData(null); setFutData(null); setTickets(null);
+    setBalances(null);
+    try {
+      const data = await apiFetch(`/api/users/search?q=${encodeURIComponent(uid)}&by=uid`);
+      setUser(data);
+      if (hasPerm('user360.financials')) {
+        setBalancesLoading(true);
+        apiFetch(`/api/users/${data.user_id}/balances`)
+          .then(b => setBalances(b.balances ?? []))
+          .catch(() => setBalances([]))
+          .finally(() => setBalancesLoading(false));
+      }
+    } catch (err) {
+      setSearchError(err instanceof Error ? err.message : 'User not found');
+    } finally {
+      setSearching(false);
+    }
+  }, [hasPerm, setSearchParams]);
+
+  // Load user from URL param on mount / back-forward navigation
+  useEffect(() => {
+    const uid = searchParams.get('uid');
+    if (uid) openUser(uid, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get('uid')]);
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -468,12 +533,14 @@ export default function User360() {
     try {
       const data = await apiFetch(`/api/users/search?q=${encodeURIComponent(searchQuery.trim())}&by=${searchBy}`);
       setUser(data);
-      // Fetch balances immediately after finding user
-      setBalancesLoading(true);
-      apiFetch(`/api/users/${data.user_id}/balances`)
-        .then(b => setBalances(b.balances ?? []))
-        .catch(() => setBalances([]))
-        .finally(() => setBalancesLoading(false));
+      setSearchParams({ uid: data.user_id });
+      if (hasPerm('user360.financials')) {
+        setBalancesLoading(true);
+        apiFetch(`/api/users/${data.user_id}/balances`)
+          .then(b => setBalances(b.balances ?? []))
+          .catch(() => setBalances([]))
+          .finally(() => setBalancesLoading(false));
+      }
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : 'User not found');
     } finally {
@@ -525,10 +592,12 @@ export default function User360() {
 
   const TABS: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
-    { id: 'transactions', label: 'Transactions' },
-    { id: 'spot', label: 'Spot Trades' },
-    { id: 'futures', label: 'Futures' },
-    { id: 'tickets', label: 'Ticket History' },
+    ...(hasPerm('user360.financials') ? [
+      { id: 'transactions' as Tab, label: 'Transactions' },
+      { id: 'spot' as Tab, label: 'Spot Trades' },
+      { id: 'futures' as Tab, label: 'Futures' },
+    ] : []),
+    ...(hasPerm('user360.tickets') ? [{ id: 'tickets' as Tab, label: 'Ticket History' }] : []),
   ];
 
   return (
@@ -576,15 +645,84 @@ export default function User360() {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {!user ? (
-          <div className="flex flex-col items-center justify-center h-full text-text-muted gap-3">
-            <svg className="w-14 h-14 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2}
-                d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/>
-            </svg>
-            <p className="text-sm">Search for a user to view their 360° profile</p>
+          <div className="p-6 max-w-5xl">
+            <div className="bg-surface-1 ring-1 ring-surface-5 rounded-xl overflow-hidden">
+              <div className="px-5 py-3 border-b border-surface-5 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-text-primary">All Customers</h2>
+                {custList && <span className="text-xs text-text-muted">{custList.total} total</span>}
+              </div>
+
+              {custLoading && !custList ? (
+                <Skeleton rows={10} />
+              ) : custList && custList.items.length > 0 ? (
+                <>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-surface-5 text-xs text-text-muted uppercase tracking-wide">
+                        <th className="px-5 py-2.5 text-left font-medium">Name</th>
+                        <th className="px-5 py-2.5 text-left font-medium">Email</th>
+                        <th className="px-5 py-2.5 text-left font-medium">User ID</th>
+                        <th className="px-5 py-2.5 text-left font-medium">KYC</th>
+                        <th className="px-5 py-2.5 text-left font-medium">Tier</th>
+                        <th className="px-5 py-2.5 text-left font-medium">Joined</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-surface-5">
+                      {custList.items.map(c => {
+                        const uid = c.bitazza_uid || c.external_id || '';
+                        return (
+                          <tr
+                            key={c.id}
+                            onClick={() => uid && openUser(uid)}
+                            className="hover:bg-surface-3 cursor-pointer transition-colors"
+                          >
+                            <td className="px-5 py-3 font-medium text-text-primary whitespace-nowrap">
+                              {c.name || <span className="text-text-muted italic">—</span>}
+                            </td>
+                            <td className="px-5 py-3 text-text-secondary">{c.email || '—'}</td>
+                            <td className="px-5 py-3 text-text-muted font-mono text-xs">{uid || '—'}</td>
+                            <td className="px-5 py-3">
+                              {c.kyc_status
+                                ? <Badge label={c.kyc_status.replace(/_/g, ' ')} color={KYC_COLORS[c.kyc_status] ?? 'bg-surface-4 text-text-muted ring-surface-5'} />
+                                : <span className="text-text-muted">—</span>}
+                            </td>
+                            <td className="px-5 py-3">
+                              {c.tier
+                                ? <Badge label={c.tier} color={TIER_COLORS[c.tier] ?? 'bg-surface-4 text-text-muted ring-surface-5'} />
+                                : <span className="text-text-muted">—</span>}
+                            </td>
+                            <td className="px-5 py-3 text-text-muted text-xs whitespace-nowrap">
+                              {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <Pagination
+                    page={custPage}
+                    total={custList.total}
+                    pageSize={25}
+                    onChange={p => loadCustomers(p)}
+                  />
+                </>
+              ) : (
+                <Empty message="No customers found" />
+              )}
+            </div>
           </div>
         ) : (
           <div className="p-6 space-y-5 max-w-6xl">
+            {/* Back to list */}
+            <button
+              onClick={() => { setUser(null); setSearchParams({}); }}
+              className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/>
+              </svg>
+              All Customers
+            </button>
             {/* User header card */}
             <div className="bg-surface-3 ring-1 ring-surface-5 rounded-xl p-5">
               <div className="flex items-start gap-4">
@@ -667,13 +805,13 @@ export default function User360() {
                           <span className="text-xs text-text-muted">Status</span>
                           <Badge label={user.kyc.status.replace(/_/g, ' ')} color={KYC_COLORS[user.kyc.status] ?? ''} />
                         </div>
-                        {user.kyc.rejection_reason && (
+                        {hasPerm('user360.kyc') && user.kyc.rejection_reason && (
                           <div className="flex items-start justify-between gap-2">
                             <span className="text-xs text-text-muted shrink-0">Reason</span>
                             <span className="text-xs text-red-600 dark:text-red-400 text-right">{user.kyc.rejection_reason}</span>
                           </div>
                         )}
-                        {user.kyc.reviewed_at && (
+                        {hasPerm('user360.kyc') && user.kyc.reviewed_at && (
                           <div className="flex items-center justify-between">
                             <span className="text-xs text-text-muted">Reviewed at</span>
                             <span className="text-xs text-text-secondary">{fmtDate(user.kyc.reviewed_at)}</span>
@@ -713,7 +851,9 @@ export default function User360() {
                   </div>
 
                   {/* Portfolio chart — full width */}
-                  <PortfolioChart balances={balances} loading={balancesLoading} />
+                  {hasPerm('user360.financials') && (
+                    <PortfolioChart balances={balances} loading={balancesLoading} />
+                  )}
                 </div>
               )}
 

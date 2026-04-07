@@ -440,6 +440,30 @@ router.post('/:id/claim', requirePermission('inbox.claim'), async (req, res) => 
   }
 });
 
+// ── POST /api/tickets/:id/resolve-request ────────────────────────────────────
+// Human agent triggers a closure confirmation prompt in the customer widget.
+router.post('/:id/resolve-request', requirePermission('inbox.reply'), async (req, res) => {
+  try {
+    await pool.query(
+      `INSERT INTO messages (ticket_id, sender_type, sender_id, content)
+       VALUES ($1, 'system', $2, '__resolve_request__')`,
+      [req.params.id, req.user.id]
+    );
+    await pool.query(
+      `UPDATE tickets SET status='Pending_Customer', updated_at=NOW() WHERE id=$1 AND status NOT IN ('Closed_Resolved','Closed_Unresponsive')`,
+      [req.params.id]
+    );
+    emitToTicket(req.params.id, 'ticket:resolve_request', {
+      ticketId: req.params.id,
+      agentName: req.user.name,
+    });
+    emitToTicket(req.params.id, 'ticket:updated', { ticketId: req.params.id, changes: { status: 'Pending_Customer' } });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── POST /api/tickets/:id/escalate ───────────────────────────────────────────
 router.post('/:id/escalate', requirePermission('inbox.escalate'), async (req, res) => {
   const { reason } = req.body;

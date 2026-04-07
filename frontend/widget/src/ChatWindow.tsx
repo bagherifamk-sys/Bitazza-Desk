@@ -69,6 +69,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
   const [resolutionRejections, setResolutionRejections] = useState(0);
   const [csatPending, setCsatPending] = useState(false);
   const [csatSubmitted, setCsatSubmitted] = useState(false);
+  const [agentClosureRequest, setAgentClosureRequest] = useState(false);
   const lastAgentMsgTime = useRef(0);
   const lastFailedText = useRef('');
   const sendRef = useRef<((text: string, category?: string, skipUserBubble?: boolean) => Promise<void>) | null>(null);
@@ -241,6 +242,17 @@ export default function ChatWindow({ cfg, onClose }: Props) {
 
     const poll = async () => {
       const { messages: history, humanHandling } = await fetchHistory(cfg, convId);
+
+      // Check for a new resolve_request system message from agent
+      const resolveRequestMsgs = history.filter(
+        (m) => m.role === 'system' && m.content === '__resolve_request__' && m.created_at > lastAgentMsgTime.current
+      );
+      if (resolveRequestMsgs.length > 0) {
+        lastAgentMsgTime.current = resolveRequestMsgs[resolveRequestMsgs.length - 1].created_at;
+        setAgentClosureRequest(true);
+        playNotificationBeep();
+      }
+
       const newAgentMsgs = history.filter(
         (m) => m.role === 'agent' && m.created_at > lastAgentMsgTime.current
       );
@@ -519,6 +531,50 @@ export default function ChatWindow({ cfg, onClose }: Props) {
             </div>
           );
         })()}
+        {/* Agent-initiated closure confirmation */}
+        {agentClosureRequest && !csatPending && !csatSubmitted && (
+          <div className="flex flex-col items-center gap-2 py-3 px-2">
+            <p className="text-sm text-gray-600 font-medium text-center">
+              {lang === 'th'
+                ? `${escalatedAgent?.name ?? 'เจ้าหน้าที่'} ต้องการปิดการสนทนานี้ ปัญหาของคุณได้รับการแก้ไขแล้วหรือยังคะ?`
+                : `${escalatedAgent?.name ?? 'Your agent'} is closing this conversation. Was your issue resolved?`}
+            </p>
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={() => {
+                  setAgentClosureRequest(false);
+                  setCsatPending(true);
+                }}
+                className="px-5 py-2 rounded-full text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 transition-colors"
+              >
+                {lang === 'th' ? '✓ แก้ไขแล้ว' : '✓ Yes, resolved'}
+              </button>
+              <button
+                onClick={() => {
+                  // Dismiss prompt — conversation stays open with human agent, AI stays silent
+                  setAgentClosureRequest(false);
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      id: crypto.randomUUID(),
+                      role: 'assistant' as const,
+                      content: lang === 'th'
+                        ? 'ได้รับทราบค่ะ เจ้าหน้าที่จะดูแลต่อ'
+                        : 'Understood. Your agent will continue assisting you.',
+                      timestamp: Date.now(),
+                      senderName: escalatedAgent?.name ?? 'Support Agent',
+                      agentAvatarUrl: escalatedAgent?.avatarUrl ?? undefined,
+                    },
+                  ]);
+                }}
+                className="px-5 py-2 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+              >
+                {lang === 'th' ? '✗ ยังไม่แก้ไข' : '✗ No, I need more help'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {csatPending && !csatSubmitted && (
           <div className="flex flex-col items-center gap-3 py-4 px-2">
             <p className="text-sm text-gray-600 font-medium text-center">
@@ -614,12 +670,12 @@ export default function ChatWindow({ cfg, onClose }: Props) {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={!langSelected ? 'Select a language / เลือกภาษา' : !selectedCategory ? (lang === 'th' ? 'เลือกประเภทปัญหาด้านบน' : 'Select an issue type above') : t.placeholder}
-          disabled={loading || !convId || !langSelected || !selectedCategory || csatPending || csatSubmitted}
+          disabled={loading || !convId || !langSelected || !selectedCategory || csatPending || csatSubmitted || agentClosureRequest}
           className="csbot-input flex-1 text-sm px-4 py-2.5 outline-none disabled:opacity-40"
         />
         <button
           onClick={() => send(input)}
-          disabled={loading || !input.trim() || !convId || !langSelected || !selectedCategory || csatPending || csatSubmitted}
+          disabled={loading || !input.trim() || !convId || !langSelected || !selectedCategory || csatPending || csatSubmitted || agentClosureRequest}
           className="csbot-send-btn w-9 h-9 rounded-full flex items-center justify-center text-white transition-all disabled:opacity-30"
           style={{ background: `linear-gradient(135deg, ${primaryColor}, ${primaryColor}cc)` }}
           aria-label={t.send}

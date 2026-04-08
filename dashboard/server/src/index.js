@@ -72,7 +72,7 @@ app.use('/api/assignment-rules', assignmentRulesRouter);
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
 // Serve uploaded avatars
-app.use('/uploads', require('express').static(require('path').join(__dirname, '..', 'uploads')));
+app.use('/uploads', (req, res, next) => { res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); next(); }, require('express').static(require('path').join(__dirname, '..', 'uploads')));
 
 // Serve React static files (production build)
 const publicDir = require('path').join(__dirname, '..', '..', '..', 'public');

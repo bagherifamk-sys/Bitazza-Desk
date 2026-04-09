@@ -202,6 +202,87 @@ def create_conversation(user_id: str, platform: str, language: str = "en", issue
     return ticket_id  # ticket_id IS the conversation_id in the Python layer
 
 
+def get_or_create_customer_by_email(email: str, name: str = "") -> tuple[str | None, bool]:
+    """
+    Look up a customer by email address.
+
+    Returns (customer_id, matched) where:
+    - matched=True means the email was found in the customers table
+    - matched=False means a new anonymous customer row was created
+
+    Used exclusively by the email channel. The caller decides whether to
+    proceed with account tools based on the matched flag.
+    """
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM customers WHERE email = %s", (email,))
+        row = cur.fetchone()
+        if row:
+            return row["id"], True
+
+        # Create anonymous customer — email only, no external_id
+        customer_id = str(uuid.uuid4())
+        display_name = name or email
+        cur.execute("""
+            INSERT INTO customers (id, name, email)
+            VALUES (%s, %s, %s)
+        """, (customer_id, display_name, email))
+        return customer_id, False
+
+
+def get_ticket_by_gmail_thread(gmail_thread_id: str) -> str | None:
+    """
+    Return the ticket_id for an existing Gmail thread, or None if new.
+    Checks both tickets.gmail_thread_id and email_threads.gmail_message_id —
+    because Gmail sometimes uses a sent message ID as the thread ID for replies.
+    """
+    with _conn() as conn:
+        cur = conn.cursor()
+        # Primary: match on thread ID stored in tickets
+        cur.execute(
+            "SELECT id FROM tickets WHERE gmail_thread_id = %s LIMIT 1",
+            (gmail_thread_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            return row["id"]
+        # Fallback: the incoming thread_id might be a sent message ID we logged
+        cur.execute(
+            "SELECT ticket_id FROM email_threads WHERE gmail_message_id = %s LIMIT 1",
+            (gmail_thread_id,),
+        )
+        row = cur.fetchone()
+        return row["ticket_id"] if row else None
+
+
+def create_email_ticket(
+    *,
+    gmail_thread_id: str,
+    customer_id: str,
+    subject: str,
+    category: str | None,
+) -> str:
+    """
+    Create a new ticket for an inbound email thread.
+    Sets channel='email' and links the gmail_thread_id for future lookups.
+    """
+    ticket_id = str(uuid.uuid4())
+    team = _CATEGORY_TEAM.get(category, "cs")
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO tickets
+                (id, customer_id, channel, status, category, priority, team,
+                 gmail_thread_id, subject)
+            VALUES (%s, %s, 'email', 'Open_Live', %s, 3, %s, %s, %s)
+        """, (
+            ticket_id, customer_id,
+            category or "ai_handling", team,
+            gmail_thread_id, subject,
+        ))
+    return ticket_id
+
+
 def update_ticket_category(conversation_id: str, category: str) -> None:
     team = _CATEGORY_TEAM.get(category, "cs")
     with _conn() as conn:
@@ -614,6 +695,15 @@ def get_ticket_with_history(ticket_id: str) -> dict | None:
     return get_conversation_with_history(ticket_id)
 
 
+def get_ticket_by_id(ticket_id: str) -> dict | None:
+    """Return a single ticket row by id, or None if not found."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM tickets WHERE id = %s", (ticket_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
 # ── Tags ──────────────────────────────────────────────────────────────────────
 
 def get_all_tags() -> list[str]:
@@ -867,3 +957,21 @@ def delete_knowledge_item(item_id: int) -> bool:
         cur = conn.cursor()
         cur.execute("DELETE FROM knowledge_items WHERE id = %s", (item_id,))
         return cur.rowcount > 0
+
+
+def log_ai_draft(
+    ticket_id: str,
+    agent_id: str,
+    instruction: str,
+    partial_draft: str,
+    generated: str,
+) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO ai_drafts (ticket_id, agent_id, instruction, partial_draft, generated)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (ticket_id, agent_id or None, instruction, partial_draft, generated),
+        )

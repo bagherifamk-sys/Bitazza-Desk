@@ -125,11 +125,15 @@ def build_user_message(
     return "\n\n".join(parts)
 
 
-def get_system_prompt(language: str, category: str | None = None) -> str:
+def get_system_prompt(language: str, category: str | None = None, platform: str = "web") -> str:
     base = SYSTEM_PROMPTS.get(language, SYSTEM_PROMPTS["en"])
     overlay = get_category_overlay(category, language)
     if overlay:
-        return base + "\n\n" + overlay.strip()
+        base = base + "\n\n" + overlay.strip()
+    if platform == "email":
+        from engine.email_prompt_overlay import EMAIL_OVERLAY
+        email_overlay = EMAIL_OVERLAY.get(language, EMAIL_OVERLAY["en"])
+        base = base + "\n\n" + email_overlay.strip()
     return base
 
 

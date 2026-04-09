@@ -29,10 +29,12 @@ JWT_ALGORITHM: str = "HS256"
 ESCALATION_CONFIDENCE_THRESHOLD: float = float(os.getenv("ESCALATION_CONFIDENCE_THRESHOLD", "0.6"))
 ESCALATION_KEYWORDS: list[str] = ["fraud", "hack", "stolen", "lawyer", "regulation", "complaint", "sue", "police", "scam"]
 ESCALATION_HUMAN_PHRASES: list[str] = [
-    "human", "agent", "person", "real support", "talk to someone", "speak to",
-    "connect me", "transfer me", "escalate", "specialist", "specialized team",
-    "kyc team", "support team", "live agent", "live support", "real person",
-    "ต่อสาย", "คุยกับคน", "เจ้าหน้าที่", "ทีม", "โอนสาย",
+    "i need a human", "talk to a human", "speak to a human", "real support agent",
+    "talk to someone", "speak to someone", "connect me to an agent",
+    "transfer me to", "i want to escalate", "escalate this",
+    "talk to a specialist", "speak to a specialist", "connect me to a specialist",
+    "live agent", "live support", "real person",
+    "ต่อสาย", "คุยกับคน", "เจ้าหน้าที่จริง", "โอนสาย",
 ]
 
 # Rate limiting
@@ -47,3 +49,21 @@ USER_API_KEY: str = os.getenv("USER_API_KEY", "mock-dev-token")
 FREEDOM_API_URL: str = os.getenv("FREEDOM_API_URL", "")
 BITAZZA_API_URL: str = os.getenv("BITAZZA_API_URL", "")
 INTERNAL_API_KEY: str = os.getenv("INTERNAL_API_KEY", "")
+
+# Email channel — Gmail API
+GMAIL_CREDENTIALS_JSON: str = os.getenv("GMAIL_CREDENTIALS_JSON", "")
+GMAIL_SUPPORT_EMAIL: str = os.getenv("GMAIL_SUPPORT_EMAIL", "support@bitazza.com")
+GOOGLE_PUBSUB_TOPIC: str = os.getenv("GOOGLE_PUBSUB_TOPIC", "")
+GMAIL_PUBSUB_SECRET: str = os.getenv("GMAIL_PUBSUB_SECRET", "")
+API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+# Email channel — attachments
+EMAIL_ATTACHMENT_STORAGE_PATH: str = os.getenv("EMAIL_ATTACHMENT_STORAGE_PATH", "./uploads/email-attachments")
+EMAIL_ATTACHMENT_MAX_MB: int = int(os.getenv("EMAIL_ATTACHMENT_MAX_MB", "10"))
+
+# Email channel — identity verification
+USE_MOCK_EMAIL_VERIFY: bool = os.getenv("USE_MOCK_EMAIL_VERIFY", "true").lower() == "true"
+EMAIL_VERIFICATION_EXPIRY_HOURS: int = int(os.getenv("EMAIL_VERIFICATION_EXPIRY_HOURS", "24"))
+
+# Email channel — CSAT
+CSAT_TOKEN_SECRET: str = os.getenv("CSAT_TOKEN_SECRET", "dev-csat-secret-change-in-prod")

@@ -746,6 +746,10 @@ interface WorkspaceProps {
 function Workspace({ ws, tickets, ticketStats, selectedId, view, search, statusFilter, onSelect, onViewChange, onSearchChange, onStatusFilterChange, onRefresh }: WorkspaceProps) {
   const selectedTicket = tickets.find(t => t.id === selectedId) ?? null;
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
+  const [composeReply, setComposeReply] = useState('');
+
+  // Reset compose reply when ticket changes
+  useEffect(() => { setComposeReply(''); }, [selectedId]);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -763,6 +767,7 @@ function Workspace({ ws, tickets, ticketStats, selectedId, view, search, statusF
               onStatusChange={onRefresh}
               pendingDraft={pendingDraft}
               onDraftConsumed={() => setPendingDraft(null)}
+              onReplyChange={setComposeReply}
             />
           : (
             <div className="flex flex-col items-center justify-center h-full bg-surface-0 gap-4">
@@ -781,6 +786,7 @@ function Workspace({ ws, tickets, ticketStats, selectedId, view, search, statusF
         <PropertiesPanel
           ticket={selectedTicket}
           onUpdate={onRefresh}
+          partialDraft={composeReply}
           onAcceptDraft={(text) => setPendingDraft(text)}
           onSelectTicket={onSelect}
         />

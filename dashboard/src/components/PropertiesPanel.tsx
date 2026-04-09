@@ -97,6 +97,7 @@ const PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
 interface Props {
   ticket: Ticket;
   onUpdate: () => void;
+  partialDraft?: string;
   onAcceptDraft?: (text: string) => void;
   onSelectTicket?: (ticketId: string) => void;
 }
@@ -108,7 +109,7 @@ const PANEL_TABS = [
   { id: 'copilot',  label: 'AI Copilot' },
 ];
 
-export default function PropertiesPanel({ ticket, onUpdate, onAcceptDraft, onSelectTicket }: Props) {
+export default function PropertiesPanel({ ticket, onUpdate, partialDraft = '', onAcceptDraft, onSelectTicket }: Props) {
   const canAssign = usePerm('inbox.assign');
   const [activeTab, setActiveTab] = useState<'details' | 'copilot'>('details');
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -376,7 +377,7 @@ export default function PropertiesPanel({ ticket, onUpdate, onAcceptDraft, onSel
 
         {/* ── AI Copilot Tab ── */}
         {activeTab === 'copilot' && (
-          <CopilotPanel ticketId={ticket.id} onAcceptDraft={onAcceptDraft} onSelectTicket={onSelectTicket} />
+          <CopilotPanel ticketId={ticket.id} partialDraft={partialDraft} onAcceptDraft={onAcceptDraft} onSelectTicket={onSelectTicket} />
         )}
       </div>
     </aside>

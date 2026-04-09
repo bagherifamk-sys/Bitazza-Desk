@@ -52,7 +52,7 @@ const DATE_RANGES = [
 const CHANNELS: Channel[] = ['web', 'line', 'facebook', 'email'];
 const CATEGORIES: TicketCategory[] = [
   'kyc_verification', 'account_restriction', 'password_2fa_reset',
-  'fraud_security', 'withdrawal_issue', 'ai_handling',
+  'fraud_security', 'withdrawal_issue',
 ];
 
 function fmtSeconds(s: number | null | undefined): string {

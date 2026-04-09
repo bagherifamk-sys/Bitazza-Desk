@@ -24,8 +24,7 @@ export type TicketCategory =
   | 'account_restriction'
   | 'password_2fa_reset'
   | 'fraud_security'
-  | 'withdrawal_issue'
-  | 'ai_handling';
+  | 'withdrawal_issue';
 
 export type InboxView =
   | 'all'
@@ -87,6 +86,9 @@ export interface Agent {
   shift?: string;
   active?: boolean;
   avatar_url?: string | null;
+  last_activity_at?: string | null;
+  longest_open_mins?: number | null;
+  open_ticket_count?: number | null;
 }
 
 export interface Message {
@@ -128,6 +130,8 @@ export interface Ticket {
   sentiment?: Sentiment | null;
   collision_agent_ids?: string[];
   csat_score?: number | null;
+  customer_name?: string | null;   // flat field returned by some queries
+  last_message?: string | null;
 }
 
 export interface TicketDetail extends Ticket {
@@ -155,13 +159,17 @@ export interface RelatedTicket {
 export interface SupervisorStats {
   opened_today: number | string;
   resolved_today: number | string;
+  resolved_yesterday?: number | string;
   avg_first_response_s?: number | string;
   avg_first_response_seconds?: number;
+  avg_resolution_s?: number | string;
   avg_resolution_seconds?: number;
   csat_avg?: number | null;
   bot_active?: number | string;
   bot_active_count?: number;
   bot_handoff_rate?: number;
+  bot_contained?: number | string;
+  bot_total?: number | string;
   queue_depth?: number;
 }
 
@@ -169,6 +177,25 @@ export interface QueueItem {
   channel: Channel;
   priority: Priority;
   count: number | string;
+  oldest_at?: string;
+}
+
+export interface ChannelHealth {
+  channel: string;
+  open_count: number;
+  queued: number;
+  oldest_queued_at: string | null;
+  sla_breached_count: number;
+  sla_met_pct: number | null;
+}
+
+export interface PendingStale {
+  id: string;
+  last_customer_msg_at: string | null;
+  customer_name: string | null;
+  tier: string | null;
+  assigned_to_name: string | null;
+  sla_deadline: string | null;
 }
 
 export interface SLARiskTicket {

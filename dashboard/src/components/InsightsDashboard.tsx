@@ -125,7 +125,7 @@ const CHANNELS = ['web', 'line', 'facebook', 'email'] as const;
 
 const CATEGORIES = [
   'kyc_verification', 'account_restriction', 'password_2fa_reset',
-  'fraud_security', 'withdrawal_issue', 'ai_handling',
+  'fraud_security', 'withdrawal_issue',
 ] as const;
 
 const CHANNEL_COLORS: Record<string, string> = {
@@ -577,72 +577,6 @@ function CSATTab({ data }: { data: InsightsData }) {
   );
 }
 
-// ── Agent Breakdown tab ───────────────────────────────────────────────────────
-
-function AgentBreakdownTab({ data }: { data: InsightsData }) {
-  const ab = data.agent_breakdown;
-  if (!ab) {
-    return (
-      <EmptyState title="You need the Metrics permission to view agent-level breakdowns." />
-    );
-  }
-
-  return (
-    <div className="space-y-8">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div>
-          <SectionHeader title="FRT by Agent" subtitle="Fastest first reply times" />
-          {ab.frt_by_agent?.length ? (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={ab.frt_by_agent} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-surface-5)" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 11, fill: 'var(--color-text-muted)' }} tickFormatter={v => fmtSeconds(v)} />
-                <YAxis dataKey="name" type="category" tick={{ fontSize: 11, fill: 'var(--color-text-muted)' }} width={100} />
-                <Tooltip content={<ChartTooltip formatter={fmtSeconds} />} />
-                <Bar dataKey="avg_s" name="Avg FRT" fill="#3B82F6" radius={[0,3,3,0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <EmptyState title="No agent FRT data" />}
-        </div>
-
-        <div>
-          <SectionHeader title="CSAT by Agent" subtitle="Top 10 by rating" />
-          {ab.csat_by_agent?.length ? (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={ab.csat_by_agent} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-surface-5)" horizontal={false} />
-                <XAxis type="number" domain={[0,5]} tick={{ fontSize: 11, fill: 'var(--color-text-muted)' }} />
-                <YAxis dataKey="name" type="category" tick={{ fontSize: 11, fill: 'var(--color-text-muted)' }} width={100} />
-                <Tooltip content={<ChartTooltip formatter={v => `${Number(v).toFixed(2)} / 5`} />} />
-                <Bar dataKey="avg" name="Avg CSAT" fill="#F59E0B" radius={[0,3,3,0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <EmptyState title="No agent CSAT data" />}
-        </div>
-      </div>
-
-      <div>
-        <SectionHeader title="AHT by Channel" subtitle="Average handle time per channel" />
-        {ab.aht_by_channel?.length ? (
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={ab.aht_by_channel}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-surface-5)" />
-              <XAxis dataKey="channel" tick={{ fontSize: 11, fill: 'var(--color-text-muted)' }} />
-              <YAxis tick={{ fontSize: 11, fill: 'var(--color-text-muted)' }} tickFormatter={v => fmtSeconds(v)} />
-              <Tooltip content={<ChartTooltip formatter={fmtSeconds} />} />
-              <Bar dataKey="avg_s" name="Avg AHT" radius={[3,3,0,0]}>
-                {ab.aht_by_channel.map((entry) => (
-                  <Cell key={entry.channel} fill={CHANNEL_COLORS[entry.channel] ?? '#22C55E'} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        ) : <EmptyState title="No AHT by channel data" />}
-      </div>
-    </div>
-  );
-}
-
 // ── Intent tab ────────────────────────────────────────────────────────────────
 
 function IntentTab({ data }: { data: InsightsData }) {
@@ -1035,8 +969,6 @@ function SlaQualityTab({ data }: { data: InsightsData }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-const AGENT_TAB_ID = 'agent_breakdown';
-
 const BASE_TAB_ITEMS: TabItem[] = [
   { id: 'overview',       label: 'Overview' },
   { id: 'volume',         label: 'Volume' },
@@ -1047,14 +979,18 @@ const BASE_TAB_ITEMS: TabItem[] = [
   { id: 'intent',         label: 'Intent' },
 ];
 
-const AGENT_TAB_ITEM: TabItem = { id: AGENT_TAB_ID, label: 'Agent Breakdown' };
+const SUPERVISOR_TAB_ITEMS: TabItem[] = [
+  { id: 'agent_leaderboard', label: 'Agent Leaderboard' },
+  { id: 'queue_health',      label: 'Queue Health' },
+  { id: 'sla_quality',       label: 'SLA & Quality' },
+];
 
 export default function InsightsDashboard() {
   const canSeeAgentBreakdown = usePerm('section.metrics');
-  const tabs = canSeeAgentBreakdown ? [...BASE_TAB_ITEMS, AGENT_TAB_ITEM] : BASE_TAB_ITEMS;
+  const tabs = canSeeAgentBreakdown ? [...BASE_TAB_ITEMS, ...SUPERVISOR_TAB_ITEMS] : BASE_TAB_ITEMS;
 
   const [activeTab, setActiveTab]   = useState<string>('overview');
-  const [range, setRange]           = useState<'today' | '7d' | '30d'>('7d');
+  const [range, setRange]           = useState<'today' | '7d' | '30d'>('30d');
   const [channel, setChannel]       = useState('');
   const [category, setCategory]     = useState('');
   const [data, setData]             = useState<InsightsData | null>(null);
@@ -1173,14 +1109,16 @@ export default function InsightsDashboard() {
           </div>
         ) : data ? (
           <>
-            {activeTab === 'overview'        && <OverviewTab       data={data} />}
-            {activeTab === 'volume'          && <VolumeTab         data={data} />}
-            {activeTab === 'response_times'  && <ResponseTimesTab  data={data} />}
-            {activeTab === 'resolution'      && <ResolutionTab     data={data} />}
-            {activeTab === 'bot'             && <BotPerformanceTab data={data} />}
-            {activeTab === 'csat'            && <CSATTab           data={data} />}
-            {activeTab === 'agent_breakdown' && <AgentBreakdownTab data={data} />}
-            {activeTab === 'intent'          && <IntentTab         data={data} />}
+            {activeTab === 'overview'           && <OverviewTab          data={data} />}
+            {activeTab === 'volume'             && <VolumeTab            data={data} />}
+            {activeTab === 'response_times'     && <ResponseTimesTab     data={data} />}
+            {activeTab === 'resolution'         && <ResolutionTab        data={data} />}
+            {activeTab === 'bot'                && <BotPerformanceTab    data={data} />}
+            {activeTab === 'csat'               && <CSATTab              data={data} />}
+            {activeTab === 'intent'             && <IntentTab            data={data} />}
+            {activeTab === 'agent_leaderboard'  && <AgentLeaderboardTab  data={data} />}
+            {activeTab === 'queue_health'       && <QueueHealthTab       data={data} />}
+            {activeTab === 'sla_quality'        && <SlaQualityTab        data={data} />}
           </>
         ) : null}
       </div>

@@ -63,10 +63,10 @@ router.get('/', async (req, res) => {
       q(`
         SELECT
           COUNT(*)::int AS total_tickets,
-          COUNT(*) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresponsive'))::int AS resolved,
+          COUNT(*) FILTER (WHERE t.status = 'Closed_Resolved')::int AS resolved,
           COUNT(*) FILTER (WHERE t.status = 'Escalated')::int AS escalated,
           COUNT(*) FILTER (WHERE t.sla_breached = true)::int AS sla_breached,
-          (COUNT(*) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresponsive')))::float
+          (COUNT(*) FILTER (WHERE t.status = 'Closed_Resolved'))::float
             / NULLIF(COUNT(*), 0) AS resolution_rate,
           AVG(
             CASE WHEN EXISTS (
@@ -81,7 +81,7 @@ router.get('/', async (req, res) => {
             END
           )::float AS avg_frt_s,
           AVG(
-            CASE WHEN t.status IN ('Closed_Resolved','Closed_Unresponsive')
+            CASE WHEN t.status = 'Closed_Resolved'
               AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
             THEN EXTRACT(EPOCH FROM (t.updated_at - t.created_at))
             END
@@ -140,7 +140,7 @@ router.get('/', async (req, res) => {
             EXTRACT(EPOCH FROM (t.updated_at - t.created_at)) AS seconds,
             DATE(t.created_at) AS day
           FROM tickets t WHERE ${wt}
-            AND t.status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND t.status = 'Closed_Resolved'
             AND EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot'))
         ),
         by_chan AS (SELECT channel, ROUND(AVG(seconds)::numeric,1) AS avg_s FROM res GROUP BY channel),
@@ -153,26 +153,27 @@ router.get('/', async (req, res) => {
       `),
 
       // ── Bot performance ────────────────────────────────────────────────────
+      // bot = ai_persona IS NOT NULL; human = assigned_to IS NOT NULL AND ai_persona IS NULL
       q(`
         WITH daily AS (
           SELECT DATE(t.created_at) AS day,
-            COUNT(*) FILTER (WHERE t.channel = 'web')  AS bot,
-            COUNT(*) FILTER (WHERE t.channel != 'web') AS human
+            COUNT(*) FILTER (WHERE t.ai_persona IS NOT NULL)                              AS bot,
+            COUNT(*) FILTER (WHERE t.ai_persona IS NULL AND t.assigned_to IS NOT NULL)   AS human
           FROM tickets t WHERE ${wt} GROUP BY DATE(t.created_at)
         ),
         per_bot AS (
           SELECT
             COALESCE(t.ai_persona->>'ai_name', 'Unknown Bot') AS bot_name,
             COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresponsive'))::int AS resolved,
+            COUNT(*) FILTER (WHERE t.status = 'Closed_Resolved')::int AS resolved,
             COUNT(*) FILTER (WHERE t.status = 'Escalated')::int AS escalated,
             AVG(t.csat_score)::float AS csat_avg
           FROM tickets t WHERE ${wt} AND t.ai_persona IS NOT NULL
           GROUP BY t.ai_persona->>'ai_name' ORDER BY total DESC LIMIT 20
         )
         SELECT
-          (SELECT COUNT(*)::float FROM tickets t WHERE ${wt} AND t.channel = 'web' AND t.status = 'Closed_Resolved')
-            / NULLIF((SELECT COUNT(*) FROM tickets t WHERE ${wt} AND t.channel = 'web'), 0) AS resolution_rate,
+          (SELECT COUNT(*)::float FROM tickets t WHERE ${wt} AND t.ai_persona IS NOT NULL AND t.status = 'Closed_Resolved')
+            / NULLIF((SELECT COUNT(*) FROM tickets t WHERE ${wt} AND t.ai_persona IS NOT NULL), 0) AS resolution_rate,
           (SELECT COUNT(*)::float FROM tickets t WHERE ${wt} AND t.status = 'Escalated')
             / NULLIF((SELECT COUNT(*) FROM tickets t WHERE ${wt}), 0) AS handoff_rate,
           (SELECT COUNT(*)::int FROM tickets t WHERE ${wt} AND t.ai_persona IS NOT NULL) AS bot_total,
@@ -195,15 +196,17 @@ router.get('/', async (req, res) => {
         by_chan AS (
           SELECT channel, ROUND(AVG(csat_score)::numeric,2) AS avg_score
           FROM base WHERE csat_score IS NOT NULL GROUP BY channel
+        ),
+        dist AS (
+          SELECT gs, COUNT(b.csat_score)::int AS cnt
+          FROM generate_series(1,5) gs
+          LEFT JOIN base b ON b.csat_score = gs
+          GROUP BY gs
         )
         SELECT
           AVG(csat_score)::float AS avg,
           COUNT(csat_score)::int AS count,
-          (SELECT json_agg(json_build_object('score', gs, 'count', cnt) ORDER BY gs)
-           FROM (SELECT gs, COUNT(t2.id)::int AS cnt
-                 FROM generate_series(1,5) gs
-                 LEFT JOIN tickets t2 ON t2.csat_score = gs AND t2.created_at > NOW() - INTERVAL '30 days'
-                 GROUP BY gs) d) AS distribution,
+          (SELECT json_agg(json_build_object('score', gs, 'count', cnt) ORDER BY gs) FROM dist) AS distribution,
           (SELECT json_agg(json_build_object('channel', channel, 'avg', avg_score)) FROM by_chan) AS by_channel
         FROM base
       `),
@@ -220,21 +223,17 @@ router.get('/', async (req, res) => {
     // ── Supervisor queries — only run when caller has section.metrics ──────────
     const supervisorQueries = canSeeAgentBreakdown ? [
 
-      // [0] Agent leaderboard — tickets handled, FCR, SLA, FRT, AHT, CSAT
-      q(`
-        WITH agent_tickets AS (
-          SELECT t.*, u.name AS agent_name
-          FROM tickets t JOIN users u ON t.assigned_to = u.id
-          WHERE ${wt}
+      // [0] Agent leaderboard — all agents, tickets handled, FCR, SLA, FRT, AHT, CSAT
+      pool.query(`
+        WITH period_tickets AS (
+          SELECT t.* FROM tickets t WHERE ${wt}
         ),
         fcr AS (
-          -- First-contact resolved: closed and never reopened (no status change back to Open/In_Progress after first close)
           SELECT t.assigned_to,
-            COUNT(*) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresponsive')
+            COUNT(*) FILTER (WHERE t.status = 'Closed_Resolved'
               AND NOT EXISTS (
                 SELECT 1 FROM audit_logs al
-                WHERE al.target_id = t.id
-                  AND al.action = 'ticket_reopened'
+                WHERE al.target_id = t.id AND al.action = 'ticket_reopened'
               ))::int AS fcr_count
           FROM tickets t WHERE ${wt} AND t.assigned_to IS NOT NULL
           GROUP BY t.assigned_to
@@ -242,29 +241,29 @@ router.get('/', async (req, res) => {
         SELECT
           u.id AS agent_id,
           u.name,
-          COUNT(t.id)::int                                                         AS total,
-          COUNT(t.id) FILTER (WHERE t.status IN ('Closed_Resolved','Closed_Unresponsive'))::int AS resolved,
-          COALESCE(fcr.fcr_count, 0)                                               AS fcr,
-          COUNT(t.id) FILTER (WHERE t.sla_breached = true)::int                   AS sla_breaches,
+          COUNT(t.id)::int                                                               AS total,
+          COUNT(t.id) FILTER (WHERE t.status = 'Closed_Resolved')::int AS resolved,
+          COALESCE(fcr.fcr_count, 0)                                                     AS fcr,
+          COUNT(t.id) FILTER (WHERE t.sla_breached = true)::int                         AS sla_breaches,
           (COUNT(t.id) FILTER (WHERE t.sla_breached = true))::float
-            / NULLIF(COUNT(t.id), 0)                                               AS sla_breach_rate,
+            / NULLIF(COUNT(t.id), 0)                                                     AS sla_breach_rate,
           AVG(EXTRACT(EPOCH FROM (
             (SELECT m.created_at FROM messages m
-             WHERE m.ticket_id = t.id AND m.sender_type IN ('agent','bot')
+             WHERE m.ticket_id = t.id AND m.sender_type = 'agent'
              ORDER BY m.created_at ASC LIMIT 1)
             - t.created_at
-          )))::float                                                                AS avg_frt_s,
-          AVG(CASE WHEN t.status IN ('Closed_Resolved','Closed_Unresponsive')
-            THEN EXTRACT(EPOCH FROM (t.updated_at - t.created_at)) END)::float    AS avg_aht_s,
-          AVG(t.csat_score)::float                                                 AS csat_avg,
-          COUNT(t.id) FILTER (WHERE t.csat_score IS NOT NULL)::int                AS csat_count
-        FROM tickets t
-        JOIN users u ON t.assigned_to = u.id
+          )))::float                                                                      AS avg_frt_s,
+          AVG(CASE WHEN t.status = 'Closed_Resolved'
+            THEN EXTRACT(EPOCH FROM (t.updated_at - t.created_at)) END)::float          AS avg_aht_s,
+          AVG(t.csat_score)::float                                                       AS csat_avg,
+          COUNT(t.id) FILTER (WHERE t.csat_score IS NOT NULL)::int                      AS csat_count
+        FROM users u
+        LEFT JOIN period_tickets t ON t.assigned_to = u.id
         LEFT JOIN fcr ON fcr.assigned_to = u.id
-        WHERE ${wt}
+        WHERE u.active = true
         GROUP BY u.id, u.name, fcr.fcr_count
-        ORDER BY total DESC LIMIT 30
-      `),
+        ORDER BY total DESC, u.name ASC
+      `, allParams),
 
       // [1] SLA breach breakdown — by agent and by category
       q(`
@@ -272,9 +271,13 @@ router.get('/', async (req, res) => {
           (SELECT json_agg(json_build_object('name', name, 'breaches', breaches, 'total', total,
             'breach_rate', CASE WHEN total > 0 THEN breaches::float / total ELSE 0 END) ORDER BY breaches DESC)
            FROM (
-             SELECT u.name, COUNT(*) FILTER (WHERE t.sla_breached)::int AS breaches, COUNT(*)::int AS total
-             FROM tickets t JOIN users u ON t.assigned_to = u.id
-             WHERE ${wt} GROUP BY u.name ORDER BY breaches DESC LIMIT 15
+             SELECT u.name,
+               COUNT(t.id) FILTER (WHERE t.sla_breached)::int AS breaches,
+               COUNT(t.id)::int AS total
+             FROM users u
+             LEFT JOIN tickets t ON t.assigned_to = u.id AND ${wt}
+             WHERE u.active = true
+             GROUP BY u.name ORDER BY breaches DESC LIMIT 15
            ) a) AS by_agent,
           (SELECT json_agg(json_build_object('category', category, 'breaches', breaches, 'total', total,
             'breach_rate', CASE WHEN total > 0 THEN breaches::float / total ELSE 0 END) ORDER BY breaches DESC)
@@ -300,11 +303,11 @@ router.get('/', async (req, res) => {
           COUNT(*) FILTER (WHERE status NOT IN ('Closed_Resolved','Closed_Unresponsive')
             AND assigned_to IS NULL AND ai_persona IS NULL)::int                                AS unassigned,
           COUNT(*) FILTER (WHERE status = 'Pending_Customer')::int                             AS pending_customer,
-          (SELECT COUNT(*)::int FROM audit_logs al WHERE al.action = 'ticket_reopened'
-            AND al.created_at >= NOW() - INTERVAL '30 days') AS reopened_30d,
-          (SELECT COUNT(*)::int FROM tickets t2
-            WHERE t2.status IN ('Closed_Resolved','Closed_Unresponsive')
-              AND t2.created_at >= NOW() - INTERVAL '30 days') AS closed_30d
+          -- reopened: tickets currently open that were last updated significantly after creation
+          -- (proxy until ticket_reopened audit events are emitted by tickets route)
+          COUNT(*) FILTER (WHERE status IN ('Open_Live','In_Progress')
+            AND EXTRACT(EPOCH FROM (updated_at - created_at)) > 300)::int                     AS reopened_30d,
+          COUNT(*) FILTER (WHERE status = 'Closed_Resolved')::int                             AS closed_30d
         FROM tickets
         WHERE ${w}
       `),

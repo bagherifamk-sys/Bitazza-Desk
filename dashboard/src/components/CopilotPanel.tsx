@@ -6,6 +6,7 @@ import { Skeleton } from './ui/Skeleton';
 
 interface Props {
   ticketId: string;
+  partialDraft?: string;
   onAcceptDraft?: (text: string) => void;
   onSelectTicket?: (ticketId: string) => void;
 }
@@ -16,7 +17,7 @@ const SENTIMENT_CONFIG: Record<string, { label: string; cls: string }> = {
   neutral:  { label: 'Neutral',  cls: 'bg-surface-4 text-text-secondary ring-1 ring-surface-5' },
 };
 
-export default function CopilotPanel({ ticketId, onAcceptDraft, onSelectTicket }: Props) {
+export default function CopilotPanel({ ticketId, partialDraft = '', onAcceptDraft, onSelectTicket }: Props) {
   const [suggestion, setSuggestion]             = useState('');
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [suggestionError, setSuggestionError]   = useState('');
@@ -190,6 +191,13 @@ export default function CopilotPanel({ ticketId, onAcceptDraft, onSelectTicket }
         )}
       </CopilotSection>
 
+      {/* ── Draft with Instructions ───────────────────────────────────── */}
+      <AssistedDraftSection
+        ticketId={ticketId}
+        partialDraft={partialDraft}
+        onAcceptDraft={onAcceptDraft}
+      />
+
       {/* ── Sentiment ────────────────────────────────────────────────── */}
       <CopilotSection
         title="Sentiment"
@@ -243,6 +251,110 @@ export default function CopilotPanel({ ticketId, onAcceptDraft, onSelectTicket }
       </CopilotSection>
 
     </div>
+  );
+}
+
+// ── Assisted Draft Section ────────────────────────────────────────────────────
+
+function AssistedDraftSection({
+  ticketId,
+  partialDraft,
+  onAcceptDraft,
+}: {
+  ticketId: string;
+  partialDraft: string;
+  onAcceptDraft?: (text: string) => void;
+}) {
+  const [instruction, setInstruction] = useState('');
+  const [draft, setDraft]             = useState('');
+  const [loading, setLoading]         = useState(false);
+  const [error, setError]             = useState('');
+  const [copied, setCopied]           = useState(false);
+
+  const generate = async () => {
+    setLoading(true); setError('');
+    try {
+      const r = await api.draftAssisted(ticketId, instruction, partialDraft);
+      setDraft(r.draft);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'AI Assist unavailable.');
+    } finally { setLoading(false); }
+  };
+
+  const copy = () => {
+    navigator.clipboard.writeText(draft).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <CopilotSection title="Ask AI to Write">
+      <div className="flex flex-col gap-1.5">
+        <textarea
+          value={instruction}
+          onChange={e => setInstruction(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); } }}
+          placeholder={'Tell AI what to write…\ne.g. "Explain how to reset 2FA" or "Apologise and ask for their transaction ID"'}
+          rows={3}
+          className="w-full text-xs bg-surface-3 ring-1 ring-surface-5 focus:ring-brand rounded-md px-2.5 py-2 outline-none text-text-primary placeholder:text-text-muted transition-colors resize-none leading-relaxed"
+        />
+        <button
+          onClick={generate}
+          disabled={loading}
+          className="self-end text-xs text-brand hover:text-brand-dim font-medium disabled:opacity-40 transition-colors flex items-center gap-1"
+        >
+          {loading ? <><Spinner size="xs" /> Generating…</> : draft ? 'Regenerate' : 'Generate'}
+        </button>
+      </div>
+
+      {partialDraft.trim() && (
+        <div className="flex items-center gap-1.5 text-[10px] text-text-muted bg-surface-3 ring-1 ring-surface-5 rounded px-2 py-1">
+          <svg className="w-3 h-3 shrink-0 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+          </svg>
+          <span className="truncate">Using your draft: <span className="text-text-secondary">{partialDraft.slice(0, 40)}{partialDraft.length > 40 ? '…' : ''}</span></span>
+        </div>
+      )}
+
+      {error && <p className="text-xs text-brand">{error}</p>}
+      {!draft && !loading && !error && (
+        <p className="text-xs text-text-muted italic">Type an instruction, then Generate.</p>
+      )}
+      {loading && !draft && (
+        <div className="space-y-2">
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-5/6" />
+          <Skeleton className="h-3 w-4/6" />
+        </div>
+      )}
+      {draft && (
+        <div className="bg-indigo-500/5 ring-1 ring-indigo-500/15 rounded-lg p-3">
+          <p className="text-xs text-text-primary whitespace-pre-wrap leading-relaxed">{draft}</p>
+          <div className="flex gap-2 mt-3">
+            {onAcceptDraft && (
+              <button
+                onClick={() => { onAcceptDraft(draft); setDraft(''); }}
+                className="text-xs px-3 py-1.5 bg-brand hover:bg-brand-dim text-white rounded transition-colors font-medium"
+              >
+                Accept
+              </button>
+            )}
+            <button
+              onClick={copy}
+              className="text-xs px-3 py-1.5 bg-surface-3 ring-1 ring-surface-5 hover:bg-surface-4 text-text-secondary rounded transition-colors"
+            >
+              {copied ? '✓ Copied' : 'Copy'}
+            </button>
+            <button
+              onClick={() => setDraft('')}
+              className="text-xs px-3 py-1.5 bg-surface-3 ring-1 ring-surface-5 hover:ring-brand/30 hover:text-brand text-text-muted rounded transition-colors"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      )}
+    </CopilotSection>
   );
 }
 

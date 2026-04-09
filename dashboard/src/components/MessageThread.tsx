@@ -205,9 +205,10 @@ interface Props {
   onStatusChange: () => void;
   pendingDraft?: string | null;
   onDraftConsumed?: () => void;
+  onReplyChange?: (value: string) => void;
 }
 
-export default function MessageThread({ ticketId, ws, onStatusChange, pendingDraft, onDraftConsumed }: Props) {
+export default function MessageThread({ ticketId, ws, onStatusChange, pendingDraft, onDraftConsumed, onReplyChange }: Props) {
   const canReply        = usePerm('inbox.reply');
   const canInternalNote = usePerm('inbox.internal_note');
   const canClose        = usePerm('inbox.close');
@@ -310,6 +311,7 @@ export default function MessageThread({ ticketId, ws, onStatusChange, pendingDra
 
   const handleReplyChange = (val: string) => {
     setReply(val);
+    onReplyChange?.(val);
     if (isAiDraft) setIsAiDraft(false);
     emitTyping();
     const match = val.match(/\/(\w*)$/);

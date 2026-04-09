@@ -71,6 +71,27 @@ async def classify_sentiment(message: str) -> str:
     return result if result in {"positive", "neutral", "negative"} else "neutral"
 
 
+async def draft_reply_with_instruction(
+    history: list[dict],
+    instruction: str = "",
+    partial_draft: str = "",
+) -> str:
+    thread = _fmt_history(history[-10:])
+    parts = [
+        "You are a Bitazza customer support agent helping a human agent compose a reply.",
+        "Match the language (Thai or English) used by the customer.",
+        "Reply with ONLY the draft message text — no explanation, no preamble.",
+        "",
+        f"CONVERSATION:\n{thread}",
+    ]
+    if partial_draft.strip():
+        parts += ["", f"AGENT'S PARTIAL DRAFT (improve/complete this):\n{partial_draft.strip()}"]
+    if instruction.strip():
+        parts += ["", f"AGENT'S INSTRUCTION: {instruction.strip()}"]
+    parts += ["", "DRAFT REPLY:"]
+    return await _call("\n".join(parts))
+
+
 async def find_related_tickets(first_message: str) -> list[dict]:
     # Stub — returns mock related tickets until vector search over tickets is wired up
     return [

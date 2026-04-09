@@ -2,19 +2,24 @@
 Background job for automatic ticket state transitions.
 Runs on a schedule via asyncio. Registered in api/main.py lifespan.
 
-Rules:
+Rules (widget / all channels):
 - pending_customer → snoozed after 48h of no activity
 - snoozed → closed after snooze_until timestamp passes (7 days max)
 - resolved → closed after 24h of no activity
+
+Additional rules (email channel):
+- email tickets stuck in pending_customer after 48h → Resolved (no reply = resolved)
+- email verification tokens expired without being used → ticket escalated to human
 """
 import asyncio
 import logging
-import time
 from db.conversation_store import get_tickets_for_auto_transition, update_ticket_status
+from db.email_store import get_pending_verification_tickets
 
 logger = logging.getLogger(__name__)
 
-INTERVAL_SECONDS = 300  # run every 5 minutes
+INTERVAL_SECONDS = 300        # run every 5 minutes
+EMAIL_POLL_MESSAGES = 20      # how many recent inbox messages to check each poll
 
 
 async def run_auto_transitions() -> None:
@@ -23,8 +28,20 @@ async def run_auto_transitions() -> None:
         buckets = get_tickets_for_auto_transition()
 
         for ticket in buckets.get("pending_customer_expired", []):
-            update_ticket_status(ticket["id"], "snoozed")
-            logger.info("Auto-snoozed ticket %s (pending_customer 48h timeout)", ticket["id"])
+            # Email tickets with no customer reply after 48h → auto-resolve
+            # Widget/other channel tickets → snooze (existing behaviour)
+            if ticket.get("channel") == "email":
+                update_ticket_status(ticket["id"], "Resolved")
+                logger.info(
+                    "Auto-resolved email ticket %s (no customer reply after 48h)",
+                    ticket["id"],
+                )
+            else:
+                update_ticket_status(ticket["id"], "snoozed")
+                logger.info(
+                    "Auto-snoozed ticket %s (pending_customer 48h timeout)",
+                    ticket["id"],
+                )
 
         for ticket in buckets.get("snoozed_expired", []):
             update_ticket_status(ticket["id"], "closed")
@@ -33,6 +50,18 @@ async def run_auto_transitions() -> None:
         for ticket in buckets.get("resolved_expired", []):
             update_ticket_status(ticket["id"], "closed")
             logger.info("Auto-closed ticket %s (resolved 24h timeout)", ticket["id"])
+
+        # Email identity verification: tokens expired without being used
+        # → escalate ticket to human (can't verify identity automatically)
+        expired_verifications = get_pending_verification_tickets()
+        for row in expired_verifications:
+            ticket_id = row["ticket_id"]
+            update_ticket_status(ticket_id, "Escalated")
+            logger.info(
+                "Escalated email ticket %s — identity verification token expired unused "
+                "(from_email=%s)",
+                ticket_id, row.get("from_email", ""),
+            )
 
     except Exception:
         logger.exception("Error in auto_transitions job")

@@ -2,6 +2,7 @@ import { io, type Socket } from 'socket.io-client';
 import type {
   Ticket, TicketDetail, TicketStatus, Priority, Agent, AgentRole,
   AgentStatus, InboxView, StatusFilter, SupervisorStats, QueueItem, SLARiskTicket,
+  ChannelHealth, PendingStale,
   AnalyticsFilters, RelatedTicket, KnowledgeItem,
 } from './types';
 
@@ -166,9 +167,23 @@ export const api = {
 
   // Supervisor
   getSupervisorLive: () =>
-    req<{ agents: Agent[]; queues: QueueItem[]; sla_risk: SLARiskTicket[]; stats: SupervisorStats }>(
-      '/api/supervisor/live'
-    ),
+    req<{
+      agents: Agent[];
+      queues: QueueItem[];
+      sla_risk: SLARiskTicket[];
+      stats: SupervisorStats;
+      channel_health: ChannelHealth[];
+      pending_stale: PendingStale[];
+    }>('/api/supervisor/live'),
+
+  assignTicket: (ticketId: string, agentId: string) =>
+    req(`/api/tickets/${ticketId}/assign`, {
+      method: 'PATCH',
+      body: JSON.stringify({ assigned_to: agentId }),
+    }),
+
+  getAgentTickets: (agentId: string) =>
+    req<Ticket[]>(`/api/supervisor/agent/${agentId}/tickets`),
 
   // Analytics (Phase 4 — stub until backend route added)
   getAnalytics: (filters: AnalyticsFilters) => {
@@ -217,6 +232,11 @@ export const api = {
   draftReply: (ticketId: string, shorthand: string) =>
     req<{ draft: string }>('/api/copilot/draft', {
       method: 'POST', body: JSON.stringify({ ticketId, shorthand }),
+    }),
+
+  draftAssisted: (ticketId: string, instruction: string, partialDraft: string) =>
+    req<{ draft: string }>('/api/copilot/draft-assisted', {
+      method: 'POST', body: JSON.stringify({ ticketId, instruction, partialDraft }),
     }),
 
   sentiment: (ticketId: string) =>

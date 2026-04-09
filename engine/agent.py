@@ -166,7 +166,8 @@ def chat(
     if escalate and reason == "user_requested_human":
         ticket_id = get_ticket_id_by_conversation(conversation_id)
         if ticket_id:
-            update_ticket_status(ticket_id, "pending_human")
+            _escalation_status = "Escalated" if platform == "email" else "pending_human"
+            update_ticket_status(ticket_id, _escalation_status)
         effective_category = detect_category_from_message(user_message) or category
         return AgentResponse(
             text=build_handoff_message(effective_category, language),
@@ -181,7 +182,7 @@ def chat(
     history = get_history(conversation_id, limit=10)
 
     # 6. Build messages for Gemini
-    system_prompt = get_system_prompt(language, category)
+    system_prompt = get_system_prompt(language, category, platform=platform)
     augmented_message = build_user_message(user_message, rag_chunks, {})
 
     # Convert history to Gemini format
@@ -329,7 +330,8 @@ def chat(
     if escalate:
         ticket_id = get_ticket_id_by_conversation(conversation_id)
         if ticket_id:
-            update_ticket_status(ticket_id, "pending_human")
+            _escalation_status = "Escalated" if platform == "email" else "pending_human"
+            update_ticket_status(ticket_id, _escalation_status)
         effective_category = detect_category_from_message(user_message) or category
         handoff = build_handoff_message(effective_category, language)
         # If the model gave a substantive answer but escalation is only due to low confidence

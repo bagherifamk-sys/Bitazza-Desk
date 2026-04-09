@@ -61,7 +61,7 @@ async function routeTicket(ticketId, customerId, priority, team = 'default') {
   }
 
   if (assignedTo) {
-    const slaMinutes = priority === 1 ? 1 : priority === 2 ? 3 : 10;
+    const slaMinutes = priority === 1 ? 10 : priority === 2 ? 15 : 30;
     await pool.query(
       `UPDATE tickets SET assigned_to=$1, status='Open_Live',
          sla_deadline=NOW() + ($2 || ' minutes')::interval, updated_at=NOW()
@@ -321,10 +321,28 @@ router.patch('/:id/priority', async (req, res) => {
 router.patch('/:id/assign', requirePermission('inbox.assign'), async (req, res) => {
   const { assigned_to, team, handoff_note } = req.body;
   try {
+    // Get previous assignee before overwriting
+    const { rows: prev } = await pool.query(
+      `SELECT assigned_to FROM tickets WHERE id=$1`, [req.params.id]
+    );
+    const prevAgent = prev[0]?.assigned_to ?? null;
+
     await pool.query(
       `UPDATE tickets SET assigned_to=$1, team=COALESCE($2,team), updated_at=NOW() WHERE id=$3`,
       [assigned_to || null, team || null, req.params.id]
     );
+
+    // Keep active_chats in sync
+    if (prevAgent && prevAgent !== (assigned_to || null)) {
+      await pool.query(
+        `UPDATE users SET active_chats = GREATEST(0, active_chats - 1) WHERE id=$1`, [prevAgent]
+      );
+    }
+    if (assigned_to && assigned_to !== prevAgent) {
+      await pool.query(
+        `UPDATE users SET active_chats = active_chats + 1 WHERE id=$1`, [assigned_to]
+      );
+    }
     if (handoff_note) {
       await pool.query(
         'INSERT INTO messages (ticket_id, sender_type, sender_id, content) VALUES ($1,$2,$3,$4)',
@@ -403,6 +421,25 @@ router.post('/:id/messages', requirePermission('inbox.reply'), async (req, res) 
       },
     });
     res.json({ ok: true, message: msg });
+
+    // If ticket channel is email and this is not an internal note, send the reply via Gmail
+    if (!is_note) {
+      const ticketRow = await pool.query(`SELECT channel FROM tickets WHERE id=$1`, [req.params.id]);
+      if (ticketRow.rows[0]?.channel === 'email') {
+        try {
+          await fetch(`${process.env.PYTHON_API_URL || 'http://localhost:8000'}/api/tickets/${req.params.id}/email-reply`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Internal-Token': process.env.INTERNAL_SERVICE_TOKEN || 'internal-dev-token',
+            },
+            body: JSON.stringify({ message: content.trim(), agent_name: req.user.name }),
+          });
+        } catch (emailErr) {
+          console.error('Failed to send agent email reply:', emailErr.message);
+        }
+      }
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -518,10 +555,11 @@ router.post('/', async (req, res) => {
     const { rows: custRows } = await pool.query('SELECT tier FROM customers WHERE id=$1', [customer_id]);
     if (vipAutoPriority1 && custRows[0]?.tier === 'VIP') p = 1;
 
+    const slaMinutes = p === 1 ? 10 : p === 2 ? 15 : 30;
     await pool.query(
-      `INSERT INTO tickets (id, customer_id, channel, category, priority, team)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [id, customer_id, channel, category, p, resolvedTeam]
+      `INSERT INTO tickets (id, customer_id, channel, category, priority, team, sla_deadline)
+       VALUES ($1,$2,$3,$4,$5,$6, NOW() + ($7 || ' minutes')::interval)`,
+      [id, customer_id, channel, category, p, resolvedTeam, String(slaMinutes)]
     );
     // FR-02/04/05: auto-route on creation
     const assignedTo = await routeTicket(id, customer_id, p, resolvedTeam).catch(err => {

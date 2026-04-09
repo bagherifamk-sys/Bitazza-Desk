@@ -147,6 +147,47 @@ router.post('/sentiment', async (req, res) => {
   }
 });
 
+// ── POST /api/copilot/draft-assisted ─────────────────────────────────────────
+// Generates a reply guided by agent instruction + optional partial draft
+router.post('/draft-assisted', async (req, res) => {
+  const { ticketId, instruction = '', partialDraft = '' } = req.body;
+  if (!ticketId) return res.status(400).json({ error: 'ticketId required' });
+
+  const allowed = await checkRateLimit(req.user.id);
+  if (!allowed) return res.status(429).json({ error: 'Rate limit reached.' });
+
+  try {
+    const msgs = await getLastMessages(ticketId, 10);
+    const thread = msgs.map(m => `[${m.sender_type}]: ${m.content}`).join('\n');
+
+    const parts = [
+      'You are a Bitazza customer support agent helping a human agent compose a reply.',
+      'Match the language (Thai or English) used by the customer.',
+      'Return ONLY the draft reply text — no explanation, no preamble.',
+      '',
+      `CONVERSATION:\n${thread}`,
+    ];
+    if (partialDraft.trim()) parts.push(`\nAGENT'S PARTIAL DRAFT (improve/complete this):\n${partialDraft.trim()}`);
+    if (instruction.trim()) parts.push(`\nAGENT'S INSTRUCTION: ${instruction.trim()}`);
+    parts.push('\nDRAFT REPLY:');
+
+    const draft = await callGemini(parts.join('\n'));
+
+    // Log to ai_drafts table (best-effort)
+    pool.query(
+      `INSERT INTO ai_drafts (ticket_id, agent_id, instruction, partial_draft, generated)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [ticketId, req.user.id, instruction, partialDraft, draft.trim()]
+    ).catch(err => console.warn('[copilot] draft-assisted log failed:', err.message));
+
+    res.json({ draft: draft.trim() });
+  } catch (err) {
+    console.error('[copilot] draft-assisted error:', err.message);
+    if (err.name === 'AbortError') return res.status(504).json({ error: 'AI Assist unavailable.' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── POST /api/copilot/related-tickets ────────────────────────────────────────
 router.post('/related-tickets', async (req, res) => {
   const { ticketId } = req.body;

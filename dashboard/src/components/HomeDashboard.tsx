@@ -114,10 +114,11 @@ export default function HomeDashboard({ onSelectTicket }: HomeDashboardProps) {
     const load = async () => {
       setLoading(true);
       try {
-        const [data, statsData] = await Promise.all([
+        const [raw, statsData] = await Promise.all([
           api.getTickets('all_open', ''),
           api.getTicketStats(),
         ]);
+        const data: Ticket[] = Array.isArray(raw) ? raw : (raw as { tickets: Ticket[] }).tickets ?? [];
         setAllTickets(data);
         setStats(statsData);
       } catch {

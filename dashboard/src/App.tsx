@@ -831,16 +831,17 @@ export default function App() {
 
   const loadTickets = async () => {
     try {
-      const [raw, stats] = await Promise.all([
-        api.getTickets(search ? 'all' : view, search, statusFilter),
-        api.getTicketStats(),
-      ]);
+      const raw = await api.getTickets(search ? 'all' : view, search, statusFilter);
       // Backend wraps the list: { tickets: [...] } — unwrap if needed
       const data: Ticket[] = Array.isArray(raw) ? raw : (raw as { tickets: Ticket[] }).tickets ?? [];
       setTickets(data);
-      setTicketStats({ open: stats.open, active: stats.active, escalated: stats.escalated });
       if (!selectedId && data.length > 0) handleSelect(data[0].id);
     } catch { /* backend stub — silent */ }
+    // Load stats independently so a failure doesn't block the ticket list
+    try {
+      const stats = await api.getTicketStats();
+      setTicketStats({ open: stats.open, active: stats.active, escalated: stats.escalated });
+    } catch { /* stats endpoint may not be available — use defaults */ }
   };
   loadTicketsRef.current = loadTickets;
 

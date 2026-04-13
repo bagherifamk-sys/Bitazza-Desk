@@ -36,6 +36,12 @@ from db.conversation_store import (
     create_email_ticket,
     update_ticket_status,
     get_history,
+    get_gmail_history_cursor,
+    set_gmail_history_cursor,
+    get_unreplied_email_tickets,
+    backfill_outbound_message,
+    assign_ai_persona,
+    get_ai_persona,
 )
 from db.email_store import (
     log_email_message,
@@ -51,7 +57,7 @@ from engine.email_prompt_overlay import (
     requires_verification_link,
     requires_registered_email,
 )
-from engine.mock_agents import detect_category_from_message
+from engine.mock_agents import detect_category_from_message, pick_agent
 from api.ws_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -272,6 +278,8 @@ async def _process_inbound_email(gmail_message_id: str) -> None:
             subject=parsed.subject,
             category=category,
         )
+        agent = pick_agent(category)
+        assign_ai_persona(ticket_id, agent["name"], agent["avatar"], agent["avatar_url"])
         await manager.broadcast_all({
             "type": "new_ticket",
             "ticket_id": ticket_id,
@@ -280,6 +288,9 @@ async def _process_inbound_email(gmail_message_id: str) -> None:
             "from_email": parsed.from_email,
             "from_name": parsed.from_name,
             "category": category,
+            "ai_agent_name": agent["name"],
+            "ai_agent_avatar": agent["avatar"],
+            "ai_agent_avatar_url": agent["avatar_url"],
         })
     else:
         # Existing thread — update status back to Open_Live if it was pending_customer
@@ -396,6 +407,9 @@ async def _process_inbound_email(gmail_message_id: str) -> None:
         return
     user_id = user_id or ticket_id  # fallback for non-account-aware categories
 
+    # Retrieve the assigned mock agent persona (set at ticket creation, or existing for follow-ups)
+    persona = get_ai_persona(ticket_id)
+
     consecutive_low = _count_consecutive_low_confidence(ticket_id)
 
     from engine.agent import chat
@@ -437,6 +451,9 @@ async def _process_inbound_email(gmail_message_id: str) -> None:
         "escalated": agent_response.escalated,
         "resolved": agent_response.resolved,
         "gmail_message_id": sent_id,
+        "agent_name": persona["name"],
+        "agent_avatar": persona["avatar"],
+        "agent_avatar_url": persona["avatar_url"],
     })
 
     _log_outbound(service, ticket_id, parsed, sent_id, reply_text, [])
@@ -456,6 +473,9 @@ async def _process_inbound_email(gmail_message_id: str) -> None:
         "escalated": agent_response.escalated,
         "resolved": agent_response.resolved,
         "channel": "email",
+        "agent_name": persona["name"],
+        "agent_avatar": persona["avatar"],
+        "agent_avatar_url": persona["avatar_url"],
     })
 
 
@@ -521,6 +541,251 @@ def set_last_history_id(history_id: str) -> None:
     _last_history_id = history_id
 
 
+# ── Safety-net: polling fallback + unreplied scanner ─────────────────────────
+
+def _gmail_thread_has_outbound(service: _GmailRestService, gmail_thread_id: str) -> tuple[bool, str, str]:
+    """
+    Check Gmail directly whether ava@freedom.world has sent any message in this thread.
+    Returns (has_outbound, gmail_message_id, body_snippet).
+    This is the source-of-truth check — prevents double-replies even if our DB is incomplete.
+    """
+    try:
+        r = service._session.get(
+            f"{_GMAIL_API}/threads/{gmail_thread_id}",
+            params={"format": "metadata", "metadataHeaders": ["From"]},
+        )
+        r.raise_for_status()
+        thread_data = r.json()
+        for msg in thread_data.get("messages", []):
+            headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            from_header = headers.get("from", "")
+            if GMAIL_SUPPORT_EMAIL.lower() in from_header.lower():
+                return True, msg.get("id", ""), headers.get("subject", "")
+        return False, "", ""
+    except Exception:
+        logger.exception("Failed to check Gmail thread %s for outbound messages", gmail_thread_id)
+        # Fail safe — assume replied to avoid double-reply
+        return True, "", ""
+
+
+def _extract_message_body(gmail_message: dict) -> str:
+    """Extract plain-text body from a full Gmail message dict."""
+    payload = gmail_message.get("payload", {})
+
+    def _decode_part(part: dict) -> str:
+        data = part.get("body", {}).get("data", "")
+        if data:
+            try:
+                return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+            except Exception:
+                return ""
+        return ""
+
+    mime_type = payload.get("mimeType", "")
+    if mime_type == "text/plain":
+        return _decode_part(payload)
+
+    for part in payload.get("parts", []):
+        if part.get("mimeType") == "text/plain":
+            body = _decode_part(part)
+            if body:
+                return body
+    return gmail_message.get("snippet", "")
+
+
+async def run_email_safety_net() -> None:
+    """
+    Two-part safety net that runs on a schedule:
+
+    Part 1 — Polling fallback:
+        Fetch Gmail history since our last stored bookmark. Any inbound email
+        that is not yet in our DB gets processed as if the webhook had fired.
+        Advances the bookmark after each successful poll.
+
+    Part 2 — Unreplied scanner:
+        Find email tickets in our DB with no outbound reply at all.
+        For each, check Gmail directly:
+          - If Gmail shows a sent message → backfill it into DB (healing inconsistency).
+          - If Gmail shows no sent message → fire the AI reply now.
+    """
+    logger.info("[safety-net] Starting email safety net run")
+
+    # ── Part 1: Polling fallback ──────────────────────────────────────────────
+    try:
+        cursor = get_gmail_history_cursor()
+        if cursor:
+            service = _get_gmail_service()
+            history_resp = service.list_history(cursor)
+            new_messages = []
+            for record in history_resp.get("history", []):
+                for msg_added in record.get("messagesAdded", []):
+                    msg = msg_added.get("message", {})
+                    label_ids = msg.get("labelIds", [])
+                    if "SENT" not in label_ids:
+                        new_messages.append(msg.get("id"))
+
+            processed = 0
+            for gmail_message_id in new_messages:
+                if gmail_message_id:
+                    try:
+                        await _process_inbound_email(gmail_message_id)
+                        processed += 1
+                    except Exception:
+                        logger.exception("[safety-net] Failed to process polled message %s", gmail_message_id)
+
+            # Advance bookmark to latest historyId in response
+            latest = history_resp.get("historyId")
+            if latest:
+                set_gmail_history_cursor(str(latest))
+                set_last_history_id(str(latest))
+
+            if processed:
+                logger.info("[safety-net] Polling fallback processed %d missed message(s)", processed)
+        else:
+            logger.info("[safety-net] No history cursor stored yet — skipping polling fallback")
+    except Exception:
+        logger.exception("[safety-net] Polling fallback failed")
+
+    # ── Part 2: Unreplied ticket scanner ─────────────────────────────────────
+    try:
+        unreplied = get_unreplied_email_tickets()
+        if not unreplied:
+            logger.info("[safety-net] No unreplied email tickets found")
+            return
+
+        logger.info("[safety-net] Found %d unreplied email ticket(s) — checking Gmail", len(unreplied))
+        service = _get_gmail_service()
+
+        for ticket in unreplied:
+            ticket_id = str(ticket["ticket_id"])
+            gmail_thread_id = ticket.get("gmail_thread_id", "")
+            if not gmail_thread_id:
+                continue
+
+            try:
+                has_outbound, sent_msg_id, sent_subject = _gmail_thread_has_outbound(service, gmail_thread_id)
+
+                if has_outbound:
+                    # Gmail has a sent message we never recorded — backfill it
+                    logger.info("[safety-net] Backfilling missing outbound for ticket %s (gmail_msg=%s)", ticket_id, sent_msg_id)
+                    if sent_msg_id:
+                        try:
+                            full_msg = service.fetch_message(sent_msg_id)
+                            body = _extract_message_body(full_msg)
+                            headers = {h["name"].lower(): h["value"] for h in full_msg.get("payload", {}).get("headers", [])}
+                            date_str = headers.get("date", "")
+                            backfill_outbound_message(
+                                ticket_id=ticket_id,
+                                gmail_thread_id=gmail_thread_id,
+                                gmail_message_id=sent_msg_id,
+                                from_email=GMAIL_SUPPORT_EMAIL,
+                                subject=sent_subject or ticket.get("subject", ""),
+                                content=body,
+                                sent_at=date_str,
+                            )
+                            update_ticket_status(ticket_id, "pending_customer")
+                        except Exception:
+                            logger.exception("[safety-net] Failed to backfill outbound for ticket %s", ticket_id)
+                    continue
+
+                # No outbound in Gmail either — genuinely unreplied. Fire AI.
+                logger.info("[safety-net] Firing AI reply for unreplied ticket %s", ticket_id)
+                try:
+                    history = get_history(ticket_id, limit=20)
+                    customer_msgs = [m for m in history if m["role"] == "user"]
+                    if not customer_msgs:
+                        continue
+
+                    last_body = customer_msgs[-1]["content"]
+                    customer_email = ticket.get("customer_email", "")
+                    customer_name = ticket.get("customer_name", "")
+                    subject = ticket.get("subject", "(no subject)")
+                    category = ticket.get("category", "general")
+
+                    user_id = _resolve_user_id(ticket["customer_id"])
+                    user_id = user_id or ticket_id
+
+                    from engine.agent import chat
+                    agent_response = chat(
+                        conversation_id=ticket_id,
+                        user_id=user_id,
+                        user_message=last_body,
+                        platform="email",
+                        consecutive_low_confidence=0,
+                        category=category,
+                    )
+
+                    last_inbound_id = _get_last_inbound_message_id(ticket_id)
+                    from engine.email_sender import send_reply
+                    from db.email_store import create_csat_tokens as _csat_tokens
+                    is_closing = agent_response.resolved
+                    csat_tokens = _csat_tokens(ticket_id) if is_closing else None
+
+                    sent_id = send_reply(
+                        service,
+                        to_email=customer_email,
+                        to_name=customer_name,
+                        subject=subject,
+                        agent_reply=agent_response.text,
+                        thread_id=gmail_thread_id,
+                        in_reply_to_message_id=last_inbound_id,
+                        references="",
+                        ticket_id=ticket_id,
+                        language="en",
+                        is_closing=is_closing,
+                        csat_tokens=csat_tokens,
+                    )
+
+                    add_message(ticket_id, "assistant", agent_response.text, metadata={
+                        "channel": "email",
+                        "confidence": agent_response.confidence,
+                        "escalated": agent_response.escalated,
+                        "resolved": agent_response.resolved,
+                        "gmail_message_id": sent_id,
+                        "triggered_by": "safety_net",
+                    })
+
+                    from db.email_store import log_email_message as _log_em
+                    _log_em(
+                        ticket_id=ticket_id,
+                        gmail_thread_id=gmail_thread_id,
+                        gmail_message_id=sent_id,
+                        direction="outbound",
+                        from_email=GMAIL_SUPPORT_EMAIL,
+                        from_name="Bitazza Support",
+                        subject=f"Re: {subject}",
+                        snippet=agent_response.text[:200],
+                        attachments=[],
+                        raw_headers={},
+                    )
+
+                    if agent_response.resolved:
+                        update_ticket_status(ticket_id, "Resolved")
+                    elif not agent_response.escalated:
+                        update_ticket_status(ticket_id, "pending_customer")
+
+                    await manager.broadcast(ticket_id, {
+                        "type": "new_message",
+                        "ticket_id": ticket_id,
+                        "sender_type": "bot",
+                        "content": agent_response.text,
+                        "channel": "email",
+                        "triggered_by": "safety_net",
+                    })
+
+                    logger.info("[safety-net] AI reply sent for ticket %s", ticket_id)
+                except Exception:
+                    logger.exception("[safety-net] Failed to fire AI reply for ticket %s", ticket_id)
+
+            except Exception:
+                logger.exception("[safety-net] Error processing ticket %s in scanner", ticket_id)
+
+    except Exception:
+        logger.exception("[safety-net] Unreplied scanner failed")
+
+    logger.info("[safety-net] Run complete")
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/email/webhook")
@@ -579,8 +844,9 @@ async def gmail_pubsub_webhook(request: Request):
             if gmail_message_id:
                 await _process_inbound_email(gmail_message_id)
 
-        # Advance stored historyId to notification's value after successful processing
+        # Advance both in-memory and DB bookmark after successful processing
         set_last_history_id(str(history_id))
+        set_gmail_history_cursor(str(history_id))
 
     except Exception:
         logger.exception("Error processing Gmail Pub/Sub notification historyId=%s", history_id)

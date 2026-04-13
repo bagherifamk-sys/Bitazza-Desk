@@ -132,32 +132,32 @@ router.get('/', async (req, res) => {
 
   const addParam = (val) => { params.push(val); return `$${p++}`; };
 
-  // View filters (skip status restrictions when an explicit status_filter is set)
+  // View filters (skip status restrictions when an explicit status_filter is set, or when 'all' is requested)
   const hasStatusFilter = status_filter && status_filter !== 'all';
   switch (view) {
     case 'mine':
       whereClauses.push(`t.assigned_to = ${addParam(agentId)}`);
-      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter && status_filter !== 'all') whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
       break;
     case 'unassigned':
       whereClauses.push(`t.assigned_to IS NULL`);
-      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter && status_filter !== 'all') whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
       break;
     case 'sla_risk':
       whereClauses.push(`t.sla_deadline < NOW() + INTERVAL '30 minutes'`);
       whereClauses.push(`t.sla_breached = false`);
-      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter && status_filter !== 'all') whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
       break;
     case 'waiting':
       whereClauses.push(`t.status = 'Pending_Customer'`);
       break;
     case 'by_priority':
-      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter && status_filter !== 'all') whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
       break;
     case 'all':
       break;
     default: // all_open
-      if (!hasStatusFilter) whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
+      if (!hasStatusFilter && status_filter !== 'all') whereClauses.push(`t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')`);
   }
 
   if (hasStatusFilter) {

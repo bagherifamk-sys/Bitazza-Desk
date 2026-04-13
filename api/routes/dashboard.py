@@ -14,7 +14,7 @@ UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads" / "avatars"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 from api.middleware.auth import get_user_id
 from db.conversation_store import (
-    get_open_tickets, get_ticket_with_history,
+    get_open_tickets, get_ticket_stats, get_ticket_with_history,
     update_ticket_status, add_message,
     get_all_conversations, get_conversation_with_history,
     transfer_ticket, snooze_ticket, block_ticket, set_pending_internal,
@@ -172,6 +172,11 @@ async def reply_to_conversation(conversation_id: str, body: ReplyRequest, user_i
 @router.get("/tickets")
 def list_tickets(search: str = "", status_filter: str = "all", user_id: str = Depends(get_user_id)):
     return {"tickets": get_open_tickets(search=search, status_filter=status_filter)}
+
+
+@router.get("/tickets/stats")
+def ticket_stats(user_id: str = Depends(get_user_id)):
+    return get_ticket_stats()
 
 
 @router.get("/tickets/{ticket_id}")

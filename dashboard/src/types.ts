@@ -89,6 +89,7 @@ export interface Agent {
   last_activity_at?: string | null;
   longest_open_mins?: number | null;
   open_ticket_count?: number | null;
+  team?: string;
 }
 
 export interface Message {
@@ -131,7 +132,6 @@ export interface Ticket {
   collision_agent_ids?: string[];
   csat_score?: number | null;
   customer_name?: string | null;   // flat field returned by some queries
-  last_message?: string | null;
 }
 
 export interface TicketDetail extends Ticket {

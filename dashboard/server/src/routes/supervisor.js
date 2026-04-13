@@ -12,7 +12,7 @@ router.get('/live', async (req, res) => {
       // Agent grid — with last message activity and longest open ticket
       pool.query(`
         SELECT
-          u.id, u.name, u.role, u.state, u.max_chats, u.skills, u.shift,
+          u.id, u.name, u.role, u.team, u.state, u.max_chats, u.skills, u.shift,
           (SELECT MAX(m.created_at) FROM messages m WHERE m.sender_id = u.id) AS last_activity_at,
           (SELECT EXTRACT(EPOCH FROM (NOW() - MIN(t2.created_at))) / 60
            FROM tickets t2

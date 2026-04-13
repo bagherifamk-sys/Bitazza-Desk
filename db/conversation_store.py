@@ -657,7 +657,7 @@ def get_open_tickets(search: str = "", status_filter: str = "open") -> list[dict
                 OR LOWER(c.external_id) LIKE %s
             )
             """
-            params = [term, term, term, term]
+            params.extend([term, term, term, term])
         base_query += " ORDER BY t.priority ASC, t.updated_at DESC"
         cur.execute(base_query, params)
         rows = cur.fetchall()
@@ -689,6 +689,23 @@ def get_open_tickets(search: str = "", status_filter: str = "open") -> list[dict
             },
         })
     return result
+
+
+def get_ticket_stats() -> dict:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'Open_Live')           AS open,
+                COUNT(*) FILTER (WHERE status = 'In_Progress')         AS active,
+                COUNT(*) FILTER (WHERE status = 'Escalated')           AS escalated,
+                COUNT(*) FILTER (WHERE status = 'Pending_Customer')    AS pending,
+                COUNT(*) FILTER (WHERE status = 'Closed_Resolved')     AS resolved,
+                COUNT(*) FILTER (WHERE status = 'Closed_Unresponsive') AS closed
+            FROM tickets
+        """)
+        row = dict(cur.fetchone())
+    return {k: int(v or 0) for k, v in row.items()}
 
 
 def get_ticket_with_history(ticket_id: str) -> dict | None:
@@ -975,3 +992,97 @@ def log_ai_draft(
             """,
             (ticket_id, agent_id or None, instruction, partial_draft, generated),
         )
+
+
+# ── Gmail history cursor (safety-net polling bookmark) ────────────────────────
+
+def get_gmail_history_cursor() -> str | None:
+    """Return the stored historyId bookmark, or None if table is empty."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT history_id FROM gmail_history_cursor WHERE id = 1")
+        row = cur.fetchone()
+        return row["history_id"] if row else None
+
+
+def set_gmail_history_cursor(history_id: str) -> None:
+    """Upsert the historyId bookmark (single row, id=1)."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO gmail_history_cursor (id, history_id, updated_at)
+            VALUES (1, %s, NOW())
+            ON CONFLICT (id) DO UPDATE SET history_id = EXCLUDED.history_id, updated_at = NOW()
+        """, (history_id,))
+
+
+def get_unreplied_email_tickets() -> list[dict]:
+    """
+    Return email tickets that have at least one inbound message in email_threads
+    but no outbound message — meaning we received the email but never replied.
+    Excludes tickets in terminal states (Closed_*, Resolved) and tickets that
+    are pending_customer waiting for the customer to act (e.g. verification sent).
+    """
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                t.id        AS ticket_id,
+                t.status,
+                t.gmail_thread_id,
+                t.subject,
+                t.category,
+                c.email     AS customer_email,
+                c.name      AS customer_name,
+                c.id        AS customer_id
+            FROM tickets t
+            JOIN customers c ON c.id = t.customer_id
+            WHERE t.channel = 'email'
+              AND t.status NOT IN ('Closed_Resolved', 'Closed_Unresponsive', 'Pending_Customer')
+              AND EXISTS (
+                  SELECT 1 FROM email_threads et
+                  WHERE et.ticket_id = t.id AND et.direction = 'inbound'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM email_threads et
+                  WHERE et.ticket_id = t.id AND et.direction = 'outbound'
+              )
+              AND t.created_at > NOW() - INTERVAL '7 days'
+        """)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def backfill_outbound_message(
+    ticket_id: str,
+    gmail_thread_id: str,
+    gmail_message_id: str,
+    from_email: str,
+    subject: str,
+    content: str,
+    sent_at: str,
+) -> None:
+    """
+    Write a sent Gmail message into our DB that was never recorded.
+    Called when the safety-net scanner finds an outbound message in Gmail
+    but no matching row in email_threads.
+    """
+    from db.email_store import log_email_message
+    log_email_message(
+        ticket_id=ticket_id,
+        gmail_thread_id=gmail_thread_id,
+        gmail_message_id=gmail_message_id,
+        direction="outbound",
+        from_email=from_email,
+        from_name="Bitazza Support",
+        subject=subject,
+        snippet=content[:200],
+        attachments=[],
+        raw_headers={},
+    )
+    # Also write to messages table so dashboard history is complete
+    add_message(ticket_id, "assistant", content, metadata={
+        "channel": "email",
+        "gmail_message_id": gmail_message_id,
+        "backfilled": True,
+        "sent_at": sent_at,
+    })

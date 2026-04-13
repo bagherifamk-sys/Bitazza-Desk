@@ -89,7 +89,7 @@ function AttentionCard({
   );
 }
 
-// ── Agent row in the team table ───────────────────────────────────────────────
+// ── Agent row ─────────────────────────────────────────────────────────────────
 
 const AGENT_ROLES = new Set(['agent', 'kyc_agent', 'finance_agent']);
 
@@ -98,23 +98,79 @@ const ROLE_LABEL: Record<string, string> = {
   supervisor: 'Supervisor', admin: 'Admin', super_admin: 'Super Admin',
 };
 
-function AgentRow({ agent, onClick }: { agent: Agent; onClick: () => void }) {
-  const isAgent     = AGENT_ROLES.has(agent.role ?? '');
-  // Always use live open_ticket_count — active_chats is stale and unreliable
-  const active      = Number(agent.open_ticket_count ?? 0);
-  const max         = isAgent ? (agent.max_chats ?? agent.max_capacity ?? 3) : 10;
+// SLA soft cap per team — oldest open ticket beyond this is flagged
+const TEAM_SLA_WARN_MINS: Record<string, number> = {
+  kyc: 240, withdrawals: 60, cs: 30, default: 30,
+};
+
+function agentStatusLine(
+  active: number,
+  longestMins: number,
+  idleMins: number,
+  breachedCount: number,
+  atRiskCount: number,
+  state: string,
+  team: string,
+): { text: string; color: string } {
+  // No tickets + available + idle
+  if (active === 0 && state === 'Available') {
+    const idle = idleMins !== Infinity && idleMins > 10;
+    return idle
+      ? { text: `Idle ${fmtMins(idleMins)}`, color: 'text-accent-amber' }
+      : { text: 'Available · no open tickets', color: 'text-text-muted' };
+  }
+  if (active === 0) return { text: 'No open tickets', color: 'text-text-muted' };
+
+  const parts: string[] = [`${active} open`];
+  if (breachedCount > 0) parts.push(`${breachedCount} breached`);
+  else if (atRiskCount > 0) parts.push(`${atRiskCount} at risk`);
+
+  const slaWarn = TEAM_SLA_WARN_MINS[team] ?? TEAM_SLA_WARN_MINS.default;
+  if (longestMins > slaWarn) parts.push(`oldest ${fmtMins(longestMins)}`);
+
+  const color = breachedCount > 0
+    ? 'text-brand'
+    : atRiskCount > 0 || longestMins > slaWarn
+    ? 'text-accent-amber'
+    : 'text-text-muted';
+
+  return { text: parts.join('  ·  '), color };
+}
+
+function AgentRow({
+  agent, breachedCount, atRiskCount, onClick,
+}: {
+  agent: Agent;
+  breachedCount: number;
+  atRiskCount: number;
+  onClick: () => void;
+}) {
   const state       = agent.state ?? agent.status ?? 'Offline';
-  const full        = isAgent && active >= (agent.max_chats ?? agent.max_capacity ?? 3);
-  const pct         = Math.min(100, (active / max) * 100);
-  const idleMins    = minutesAgo(agent.last_activity_at);
+  const active      = Number(agent.open_ticket_count ?? 0);
   const longestMins = Number(agent.longest_open_mins ?? 0);
-  const isIdle      = isAgent && state === 'Available' && idleMins > 10;
-  const isStuck     = longestMins > 45 && active > 0;
+  const idleMins    = minutesAgo(agent.last_activity_at);
+  const team        = agent.team ?? 'cs';
+
+  // Bar color driven by worst ticket state, not capacity
+  const barColor = breachedCount > 0
+    ? 'bg-brand'
+    : atRiskCount > 0
+    ? 'bg-accent-amber'
+    : active === 0
+    ? 'bg-surface-4'
+    : 'bg-accent-green';
+
+  // Bar width: scale against a soft cap of 10; empty if no tickets
+  const pct = active === 0 ? 0 : Math.min(100, (active / 10) * 100);
+
+  const { text: statusText, color: statusColor } = agentStatusLine(
+    active, longestMins, idleMins, breachedCount, atRiskCount, state, team
+  );
 
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center gap-4 px-4 py-3 hover:bg-surface-3 transition-colors text-left"
+      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-surface-3 transition-colors text-left group"
     >
       {/* Avatar + state dot */}
       <div className="relative shrink-0">
@@ -126,43 +182,24 @@ function AgentRow({ agent, onClick }: { agent: Agent; onClick: () => void }) {
         </span>
       </div>
 
-      {/* Name + status signals */}
+      {/* Name + contextual status line */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 mb-1">
           <span className="text-sm font-medium text-text-primary truncate">{agent.name}</span>
-          {isIdle && (
-            <span className="text-[9px] font-semibold bg-accent-amber/10 text-accent-amber px-1.5 py-0.5 rounded uppercase tracking-wide shrink-0">
-              Idle {fmtMins(idleMins)}
-            </span>
-          )}
-          {isStuck && (
-            <span className="text-[9px] font-semibold bg-brand/10 text-brand px-1.5 py-0.5 rounded uppercase tracking-wide shrink-0">
-              Stuck {fmtMins(longestMins)}
-            </span>
-          )}
-        </div>
-        <div className="text-[10px] text-text-muted mt-0.5">
-          {state}{agent.role ? ` · ${ROLE_LABEL[agent.role] ?? agent.role}` : ''}{agent.shift ? ` · ${agent.shift}` : ''}
-        </div>
-      </div>
-
-      {/* Load bar — chats for agents, open tickets for others */}
-      <div className="w-28 shrink-0">
-        <div className="flex items-center justify-between mb-1">
-          <span className={`text-xs font-bold tabular-nums ${full ? 'text-brand' : 'text-text-primary'}`}>
-            {active}
-            {isAgent && <span className="text-text-muted font-normal">/{agent.max_chats ?? agent.max_capacity ?? 3}</span>}
-            <span className="text-[10px] text-text-muted font-normal ml-1">tickets</span>
+          <span className="text-[10px] text-text-muted shrink-0">
+            {state} · {ROLE_LABEL[agent.role ?? ''] ?? agent.role ?? ''}
+            {agent.shift ? ` · ${agent.shift}` : ''}
           </span>
-          {longestMins > 0 && (
-            <span className="text-[10px] text-text-muted tabular-nums">{fmtMins(longestMins)}</span>
-          )}
         </div>
-        <div className="h-1 bg-surface-4 rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all ${full ? 'bg-brand' : pct > 66 ? 'bg-accent-amber' : 'bg-accent-green'}`}
-            style={{ width: `${pct}%` }}
-          />
+        {/* Single status line — only shows what matters */}
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-1 bg-surface-4 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <span className={`text-[10px] tabular-nums shrink-0 ${statusColor}`}>{statusText}</span>
         </div>
       </div>
     </button>
@@ -593,9 +630,20 @@ export default function SupervisorDashboard() {
                 <EmptyState title="No agents online" className="py-8" />
               ) : (
                 <div className="divide-y divide-surface-5">
-                  {agents.map(a => (
-                    <AgentRow key={a.id} agent={a} onClick={() => setDrillAgent(a)} />
-                  ))}
+                  {agents.map(a => {
+                    const agentTickets = slaRisk.filter(t =>
+                      (t.assigned_to_name === a.name) || (t.assigned_agent_name === a.name)
+                    );
+                    return (
+                      <AgentRow
+                        key={a.id}
+                        agent={a}
+                        breachedCount={agentTickets.filter(t => t.sla_breached).length}
+                        atRiskCount={agentTickets.filter(t => !t.sla_breached).length}
+                        onClick={() => setDrillAgent(a)}
+                      />
+                    );
+                  })}
                 </div>
               )}
 

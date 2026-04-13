@@ -37,8 +37,14 @@ def _activate_gmail_watch() -> None:
         # Store historyId so the webhook can catch emails that arrived before
         # the first Pub/Sub notification after a server restart
         from api.routes.email import set_last_history_id
+        from db.conversation_store import get_gmail_history_cursor, set_gmail_history_cursor
         if result.get("historyId"):
-            set_last_history_id(str(result["historyId"]))
+            history_id_str = str(result["historyId"])
+            set_last_history_id(history_id_str)
+            # Only seed the DB cursor if it's not already set — don't overwrite
+            # a valid bookmark with the watch() historyId (which is always "latest")
+            if not get_gmail_history_cursor():
+                set_gmail_history_cursor(history_id_str)
     except Exception:
         import logging
         logging.getLogger(__name__).warning(
@@ -47,11 +53,29 @@ def _activate_gmail_watch() -> None:
         )
 
 
+async def _email_safety_net_loop() -> None:
+    """Run the email safety-net scanner every 5 minutes."""
+    import logging
+    log = logging.getLogger(__name__)
+    # Wait 60s after startup before the first run (let the server fully initialize)
+    await asyncio.sleep(60)
+    while True:
+        try:
+            from api.routes.email import run_email_safety_net
+            await run_email_safety_net()
+        except Exception:
+            log.exception("Email safety-net loop error")
+        await asyncio.sleep(5 * 60)  # 5 minutes
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     asyncio.create_task(start_auto_transition_loop())
+    asyncio.create_task(_email_safety_net_loop())
     _activate_gmail_watch()
+    # Seed the history cursor from the watch() response so the first poll
+    # doesn't start from scratch on a fresh server start
     yield
 
 

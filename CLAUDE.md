@@ -18,13 +18,36 @@ tests/         Pytest test suite
 ```
 
 ## Critical Rules
+
+### Correctness
+- Read a file before editing it
+- If a file was edited earlier in this session, re-read it before making further edits
+- Before changing a function signature, grep all callers first
+- Change only what was asked — unless the surrounding code makes the requested change incorrect or unsafe
+- Never alter existing `db/migrations/` files — only add new ones
+- After changes to `engine/` or `api/routes/`, grep for a corresponding test and note whether it covers the change
+
+### Project-Specific Invariants
 - Secrets live in `.env` only — never hardcode API keys
 - All LLM calls use `gemini-2.0-flash` unless specified otherwise
 - RAG always cites source chunk metadata in responses
-- Every response must pass security_filter BEFORE and compliance_filter AFTER generation
 - Escalation threshold: confidence < 0.6 OR explicit trigger keywords
 - Language: auto-detect EN/TH on every message; use matching prompt template
 - Account tools (KYC, deposits, etc.) require authenticated user_id from JWT — never trust client-supplied IDs
+- `security_filter` runs BEFORE generation, `compliance_filter` AFTER — this order must never change
+- If an EN prompt template changes, the TH template must be updated to match semantically
+- `engine/account_tools.py` functions are intentionally stubbed (fake data) — never replace with real calls without explicit instruction
+- Email processing claim logic (migration 006) is a concurrency lock — never simplify or bypass without explicit instruction
+- `tests/conftest.py` has session-scoped DB fixtures shared across all tests — changes here can silently break the entire suite
+
+### Memory
+- Any session that creates, edits, or deletes files must update affected memory files and refresh their `last_verified` date before closing
+- Before acting on a memory claim that references a file, function, or implementation status, verify it against current code first if `last_verified` is more than 7 days old
+
+### Token Efficiency
+- Grep for a symbol before opening a file — use `files_with_matches` first, then read only matching files
+- Never read `dashboard/node_modules/` or `frontend/widget/node_modules/`
+- When fixing a bug in `engine/` or `api/`, grep test files to check for encoded business rules before editing — don't read them speculatively
 
 ## Env Vars (see .env.example)
 `GEMINI_API_KEY` · `FRESHDESK_API_KEY` · `FRESHDESK_SUBDOMAIN` · `YELLOWAI_API_KEY` · `DATABASE_URL` · `CHROMA_PATH` · `JWT_SECRET`

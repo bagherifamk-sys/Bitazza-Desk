@@ -75,27 +75,36 @@ def _sender_type_to_role(sender_type: str) -> str:
 
 # ── Conversations / Customers ─────────────────────────────────────────────────
 
-def _fetch_user_profile(user_id: str) -> dict:
+def _fetch_user_profile(user_id: str, _retries: int = 3, _delay: float = 0.2) -> dict:
     """
     Fetch user profile from the User/KYC API (mock or real).
-    Returns an empty dict on any failure — customer creation continues without it.
+    Retries up to _retries times on transient failures before giving up.
+    Returns an empty dict only if all attempts fail.
     """
     import requests as _requests
     use_mock = settings.USE_MOCK_USER_API
     base = settings.USER_API_BASE_URL
     key  = settings.USER_API_KEY
     prefix = "/mock" if use_mock else ""
-    try:
-        r = _requests.get(
-            f"{base}{prefix}/user",
-            params={"user_id": user_id},
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=3,
-        )
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        logger.exception("Failed to fetch user profile for user_id=%s — continuing without it", user_id)
+    url = f"{base}{prefix}/user"
+    for attempt in range(1, _retries + 1):
+        try:
+            r = _requests.get(
+                url,
+                params={"user_id": user_id},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=3,
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            logger.warning(
+                "Profile fetch attempt %d/%d failed for user_id=%s",
+                attempt, _retries, user_id,
+            )
+            if attempt < _retries:
+                time.sleep(_delay)
+    logger.error("All %d profile fetch attempts failed for user_id=%s — continuing without profile", _retries, user_id)
     return {}
 
 
@@ -169,7 +178,7 @@ def _ensure_customer(cur, user_id: str) -> str:
 
     first = profile.get("first_name", "")
     last  = profile.get("last_name", "")
-    display_name = f"{first} {last}".strip() or tag
+    display_name = f"{first} {last}".strip() or user_id
     email        = profile.get("email") or None
     phone        = profile.get("phone") or None
     tier         = profile.get("tier") or "regular"
@@ -180,6 +189,47 @@ def _ensure_customer(cur, user_id: str) -> str:
         VALUES (%s, %s, %s, %s, %s, %s, %s)
     """, (customer_id, display_name, email, phone, tier, kyc_status, user_id))
     return customer_id
+
+
+def update_customer_from_profile(user_id: str, profile: dict) -> None:
+    """
+    Backfill customer name/email/tier/kyc_status from a profile dict already
+    fetched by the agent's get_user_profile tool.
+
+    Called by the agent after a successful get_user_profile tool call so that
+    even if _fetch_user_profile failed at conversation creation time, the
+    customer record is corrected as soon as the agent has the data.
+
+    No-op if profile is empty or user_id has no customer row.
+    """
+    if not profile or "error" in profile:
+        return
+
+    first = profile.get("first_name", "")
+    last  = profile.get("last_name", "")
+    display_name = f"{first} {last}".strip()
+    email      = profile.get("email") or None
+    phone      = profile.get("phone") or None
+    tier       = profile.get("tier") or None
+    kyc_status = (profile.get("kyc") or {}).get("status") or None
+
+    if not display_name:
+        return
+
+    try:
+        with _conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE customers
+                SET name       = COALESCE(NULLIF(%s,''), name),
+                    email      = COALESCE(%s, email),
+                    phone      = COALESCE(%s, phone),
+                    tier       = COALESCE(%s, tier),
+                    kyc_status = COALESCE(%s, kyc_status)
+                WHERE external_id = %s
+            """, (display_name, email, phone, tier, kyc_status, user_id))
+    except Exception:
+        logger.exception("update_customer_from_profile failed for user_id=%s — non-fatal", user_id)
 
 
 def create_conversation(user_id: str, platform: str, language: str = "en", issue_category: str | None = None) -> str:

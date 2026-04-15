@@ -12,7 +12,7 @@ from google.genai import types as genai_types
 from google.genai import errors as genai_errors
 from config.settings import GEMINI_API_KEY, MODEL, MAX_TOKENS, ESCALATION_CONFIDENCE_THRESHOLD
 from engine.retriever import retrieve_with_fallback
-from engine.account_tools import TOOLS, TOOL_DEFINITIONS
+from engine.account_tools import TOOLS, TOOL_DEFINITIONS, get_user_profile
 from engine.security_filter import pre_filter, post_filter, contains_financial_advice_request
 from engine.escalation import should_escalate
 from engine.prompt_templates import (
@@ -23,7 +23,7 @@ from engine.mock_agents import pick_agent, detect_category_from_message, get_int
 from db.conversation_store import (
     get_history, add_message, create_ticket,
     get_ai_persona, update_ticket_status,
-    get_ticket_id_by_conversation,
+    get_ticket_id_by_conversation, update_customer_from_profile,
 )
 from db.vector_store import collection_count
 
@@ -310,6 +310,11 @@ def chat(
                 # Inject authenticated user_id — never trust tool input for this
                 result = tool_fn(user_id=user_id, **kwargs)
                 account_data[fn_call.name] = result
+                # Backfill customer record with real profile data so the dashboard
+                # shows the correct name even if _fetch_user_profile failed at
+                # conversation creation time.
+                if fn_call.name == "get_user_profile" and "error" not in result:
+                    update_customer_from_profile(user_id, result)
                 fn_response_parts.append(
                     genai_types.Part(
                         function_response=genai_types.FunctionResponse(

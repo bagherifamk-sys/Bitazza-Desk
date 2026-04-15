@@ -103,3 +103,107 @@ def test_security_filter_blocks_prompt_injection(mock_dependencies):
     mock_dependencies.models.generate_content.assert_not_called()
     assert result.escalated is False
     assert "unable to process" in result.text.lower()
+
+
+# ── Customer profile backfill tests ───────────────────────────────────────────
+
+def _gemini_tool_then_text_response(tool_name: str, tool_result: dict, final_text: str):
+    """
+    Build a two-step Gemini response sequence:
+    1. First response: contains a function_call for tool_name
+    2. Second response: plain text (after tool result is fed back)
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    # Step 1: function call response
+    fn_call = MagicMock()
+    fn_call.name = tool_name
+    fn_call.args = {}
+
+    fn_part = MagicMock()
+    fn_part.function_call = fn_call
+    fn_part.text = None
+
+    fn_content = MagicMock()
+    fn_content.parts = [fn_part]
+
+    fn_candidate = MagicMock()
+    fn_candidate.content = fn_content
+
+    first_response = MagicMock()
+    first_response.candidates = [fn_candidate]
+
+    # Step 2: text response
+    second_response = _gemini_response(final_text)
+
+    return [first_response, second_response]
+
+
+def test_agent_calls_update_customer_from_profile_after_tool_success(mock_dependencies):
+    """When get_user_profile tool succeeds, agent calls update_customer_from_profile with the result."""
+    from unittest.mock import patch, MagicMock
+
+    profile = {
+        "first_name": "Jintana", "last_name": "Wiset",
+        "email": "jintana@example.com", "phone": "+66812345610",
+        "tier": "VIP", "kyc": {"status": "pending_information"},
+    }
+
+    responses = _gemini_tool_then_text_response(
+        "get_user_profile",
+        profile,
+        _json_payload("Your KYC is pending information.", confidence=0.9),
+    )
+    mock_dependencies.models.generate_content.side_effect = responses
+
+    # The agent calls tools via TOOLS.get(fn_call.name) — patch TOOLS so the
+    # mock tool fn is invoked, and separately patch update_customer_from_profile.
+    fake_tools = {"get_user_profile": lambda **kwargs: profile}
+
+    with (
+        patch("engine.agent.TOOLS", fake_tools),
+        patch("engine.agent.update_customer_from_profile") as mock_backfill,
+    ):
+        from engine.agent import chat
+        result = chat(
+            conversation_id="conv-backfill-1",
+            user_id="USR-000010",
+            user_message="What is my KYC status?",
+            category="kyc_verification",
+        )
+
+    mock_backfill.assert_called_once_with("USR-000010", profile)
+    assert result.escalated is False
+
+
+def test_agent_does_not_call_update_customer_if_profile_has_error(mock_dependencies):
+    """When get_user_profile returns an error dict, backfill is NOT called."""
+    from unittest.mock import patch
+
+    error_profile = {"error": "user not found"}
+
+    responses = _gemini_tool_then_text_response(
+        "get_user_profile",
+        error_profile,
+        _json_payload("I couldn't find your account.", confidence=0.9),
+    )
+    mock_dependencies.models.generate_content.side_effect = responses
+
+    fake_tools = {"get_user_profile": lambda **kwargs: error_profile}
+
+    with (
+        patch("engine.agent.TOOLS", fake_tools),
+        patch("engine.agent.update_customer_from_profile") as mock_backfill,
+    ):
+        from engine.agent import chat
+        chat(
+            conversation_id="conv-backfill-2",
+            user_id="USR-UNKNOWN",
+            user_message="What is my KYC status?",
+            category="kyc_verification",
+        )
+
+    mock_backfill.assert_not_called()
+
+    mock_backfill.assert_not_called()

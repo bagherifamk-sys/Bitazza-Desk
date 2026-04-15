@@ -100,6 +100,27 @@ def email_message_already_processed(gmail_message_id: str) -> bool:
         return cur.fetchone() is not None
 
 
+def try_claim_gmail_message(gmail_message_id: str) -> bool:
+    """
+    Atomically claim a Gmail message for processing.
+    Returns True if this call won the claim (proceed with processing).
+    Returns False if another call already claimed it (skip — duplicate delivery).
+
+    Uses INSERT ON CONFLICT so the claim is a single atomic DB operation,
+    preventing the TOCTOU race where two concurrent webhook calls both pass
+    the email_message_already_processed() pre-check before either logs the row.
+    """
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO email_processing_claims (gmail_message_id, claimed_at)
+            VALUES (%s, NOW())
+            ON CONFLICT (gmail_message_id) DO NOTHING
+            RETURNING gmail_message_id
+        """, (gmail_message_id,))
+        return cur.fetchone() is not None
+
+
 # ── Attachment storage ────────────────────────────────────────────────────────
 
 def build_attachment_record(

@@ -48,8 +48,23 @@ def _user_api_get(param: str, value: str) -> dict:
     """
     Single-user lookup against the User/KYC API (mock or real).
     param: one of 'user_id', 'email', 'phone'
+    In mock mode, calls the in-process store directly to avoid HTTP self-call deadlock.
     """
-    prefix = "/mock" if _USE_MOCK else ""
+    if _USE_MOCK:
+        from engine.mock_api import users as user_store
+        if param == "user_id":
+            profile = user_store.get_by_user_id(value)
+        elif param == "email":
+            profile = user_store.get_by_email(value)
+        elif param == "phone":
+            profile = user_store.get_by_phone(value)
+        else:
+            return {"error": f"unknown param: {param}"}
+        if profile is None:
+            return {"error": "user_not_found"}
+        return profile.model_dump()
+
+    prefix = ""
     url = f"{_USER_API_BASE}{prefix}/user"
     try:
         r = requests.get(url, params={param: value}, headers=_USER_HEADERS, timeout=5)
@@ -112,9 +127,17 @@ def get_account_restrictions(user_id: str) -> dict:
                    trading_block_reason.
     Each restriction: restriction_id, type, status, reason, applied_at,
                       expected_lift_at, can_self_resolve, resolution_steps.
+    In mock mode, calls the in-process store directly to avoid HTTP self-call deadlock.
     """
-    prefix = "/mock" if _USE_MOCK else ""
-    url = f"{_USER_API_BASE}{prefix}/restrictions"
+    if _USE_MOCK:
+        from engine.mock_api import restrictions as restriction_store
+        result = restriction_store.get_by_user_id(user_id)
+        if result is None:
+            return {"user_id": user_id, "has_restrictions": False, "restrictions": [],
+                    "trading_available": True, "trading_block_reason": None}
+        return result.model_dump()
+
+    url = f"{_USER_API_BASE}/restrictions"
     try:
         r = requests.get(url, params={"user_id": user_id}, headers=_USER_HEADERS, timeout=5)
         if r.status_code == 401:

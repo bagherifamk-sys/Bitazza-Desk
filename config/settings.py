@@ -34,7 +34,7 @@ ESCALATION_HUMAN_PHRASES: list[str] = [
     "transfer me to", "i want to escalate", "escalate this",
     "talk to a specialist", "speak to a specialist", "connect me to a specialist",
     "live agent", "live support", "real person",
-    "ต่อสาย", "คุยกับคน", "เจ้าหน้าที่จริง", "โอนสาย",
+    "ต่อสาย", "คุยกับคน", "ขอคุยกับ", "เจ้าหน้าที่จริง", "โอนสาย",
 ]
 
 # Rate limiting

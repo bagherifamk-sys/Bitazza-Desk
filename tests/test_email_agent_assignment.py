@@ -7,7 +7,7 @@ Coverage:
   - api.routes.email._process_inbound_email (new ticket):
       * pick_agent() called with detected category
       * assign_ai_persona() called with the picked agent's fields
-      * new_ticket WS broadcast carries ai_agent_name / ai_agent_avatar / ai_agent_avatar_url
+      * new_ticket WS broadcast sends a { ticket: Ticket } object with ai_persona set
       * assistant add_message metadata carries agent_name / agent_avatar / agent_avatar_url
       * new_message WS broadcast carries agent_name / agent_avatar / agent_avatar_url
   - api.routes.email._process_inbound_email (existing ticket / follow-up):
@@ -181,8 +181,14 @@ def mock_db(sqlite_db, monkeypatch):
         yield fake_conn
 
     import db.conversation_store as store
+    import db.email_store as estore
+    import api.routes.email as email_route
     monkeypatch.setattr(store, "_conn", _fake_conn_ctx)
     monkeypatch.setattr(store, "_fetch_user_profile", lambda uid: {})
+    # Prevent try_claim_gmail_message from writing to the real PostgreSQL DB.
+    # Without this patch, static test message IDs get claimed on first run and
+    # _process_inbound_email returns early on every subsequent run.
+    monkeypatch.setattr(email_route, "try_claim_gmail_message", lambda _: True)
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -439,9 +445,12 @@ class TestProcessInboundEmailNewTicket:
 
         payload = mock_manager.broadcast_all.call_args[0][0]
         assert payload["type"] == "new_ticket"
-        assert payload["ai_agent_name"] == "Arm"
-        assert payload["ai_agent_avatar"] == "A"
-        assert payload["ai_agent_avatar_url"] == agent["avatar_url"]
+        ticket_obj = payload["ticket"]
+        assert ticket_obj["id"] == "ticket-w-001"
+        assert ticket_obj["channel"] == "email"
+        assert ticket_obj["ai_persona"]["ai_name"] == "Arm"
+        assert ticket_obj["ai_persona"]["ai_avatar"] == "A"
+        assert ticket_obj["ai_persona"]["ai_avatar_url"] == agent["avatar_url"]
 
     @pytest.mark.asyncio
     async def test_assistant_message_metadata_includes_agent_fields(self):

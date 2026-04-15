@@ -46,6 +46,7 @@ from db.conversation_store import (
 from db.email_store import (
     log_email_message,
     email_message_already_processed,
+    try_claim_gmail_message,
     build_attachment_record,
     create_verification_token,
     consume_verification_token,
@@ -57,7 +58,7 @@ from engine.email_prompt_overlay import (
     requires_verification_link,
     requires_registered_email,
 )
-from engine.mock_agents import detect_category_from_message, pick_agent
+from engine.mock_agents import detect_category_from_message, classify_message_with_gemini, pick_agent
 from api.ws_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -250,13 +251,43 @@ async def _process_inbound_email(gmail_message_id: str) -> None:
     Full pipeline for a single inbound Gmail message.
     Called from the webhook handler after Pub/Sub notification arrives.
     """
-    if email_message_already_processed(gmail_message_id):
-        logger.info("Skipping already-processed message %s", gmail_message_id)
+    if not try_claim_gmail_message(gmail_message_id):
+        logger.info("Skipping already-claimed message %s (duplicate delivery)", gmail_message_id)
         return
 
     service = _get_gmail_service()
     raw_message = _fetch_gmail_message(service, gmail_message_id)
+
+    # Hard guard: skip messages sent FROM our own support address.
+    # Gmail Pub/Sub fires for every history event including our own outbound
+    # messages — the SENT label filter is unreliable for API-sent mail.
+    _raw_from = next(
+        (h["value"] for h in raw_message.get("payload", {}).get("headers", [])
+         if h["name"].lower() == "from"),
+        ""
+    )
+    if GMAIL_SUPPORT_EMAIL.lower() in _raw_from.lower():
+        logger.info("Skipping outbound message %s (from=%s)", gmail_message_id, _raw_from)
+        return
+
     parsed = parse_gmail_message(raw_message)
+
+    # Secondary idempotency guard using the RFC Message-ID stored in email_threads.
+    # Catches messages processed before the email_processing_claims table existed —
+    # the claim table uses the Gmail API hex ID but email_threads stores the RFC ID,
+    # so old processed messages would pass the claim check but are already in DB.
+    if email_message_already_processed(parsed.message_id):
+        logger.info("Skipping already-processed message RFC=%s", parsed.message_id)
+        return
+
+    # Reject automated / system-generated emails before touching anything.
+    # This prevents AI replies to bounces, newsletters, delivery reports, etc.
+    if parsed.is_automated:
+        logger.info(
+            "Dropping automated email gmail_id=%s from=%s reason=%s",
+            gmail_message_id, parsed.from_email, parsed.automated_reason,
+        )
+        return
 
     # ── 1. Resolve or create ticket ───────────────────────────────────────────
     ticket_id = get_ticket_by_gmail_thread(parsed.thread_id)
@@ -268,7 +299,8 @@ async def _process_inbound_email(gmail_message_id: str) -> None:
     )
 
     # ── 3. Detect category from subject + body ────────────────────────────────
-    category = detect_category_from_message(f"{parsed.subject} {parsed.body}")
+    combined_text = f"{parsed.subject} {parsed.body}"
+    category = classify_message_with_gemini(combined_text) or detect_category_from_message(combined_text)
 
     # ── 4. Create ticket if new thread ────────────────────────────────────────
     if is_new_ticket:
@@ -280,17 +312,34 @@ async def _process_inbound_email(gmail_message_id: str) -> None:
         )
         agent = pick_agent(category)
         assign_ai_persona(ticket_id, agent["name"], agent["avatar"], agent["avatar_url"])
+        import time as _time
         await manager.broadcast_all({
             "type": "new_ticket",
-            "ticket_id": ticket_id,
-            "channel": "email",
-            "subject": parsed.subject,
-            "from_email": parsed.from_email,
-            "from_name": parsed.from_name,
-            "category": category,
-            "ai_agent_name": agent["name"],
-            "ai_agent_avatar": agent["avatar"],
-            "ai_agent_avatar_url": agent["avatar_url"],
+            "ticket": {
+                "id": ticket_id,
+                "status": "Open_Live",
+                "channel": "email",
+                "category": category,
+                "priority": 3,
+                "tags": [],
+                "subject": parsed.subject,
+                "assigned_to": None,
+                "assigned_to_name": None,
+                "ai_persona": {
+                    "ai_name": agent["name"],
+                    "ai_avatar": agent["avatar"],
+                    "ai_avatar_url": agent["avatar_url"],
+                },
+                "customer": {
+                    "name": parsed.from_name,
+                    "email": parsed.from_email,
+                    "tier": "Standard",
+                },
+                "last_message": parsed.snippet,
+                "last_message_at": None,
+                "created_at": int(_time.time()),
+                "updated_at": int(_time.time()),
+            },
         })
     else:
         # Existing thread — update status back to Open_Live if it was pending_customer
@@ -498,6 +547,7 @@ def _log_outbound(service, ticket_id: str, parsed, sent_gmail_id: str, content: 
 
 _INVALID_USER_ID_PLACEHOLDERS = {
     "replace_with_real_user_id", "", "none", "null", "undefined",
+    "dev_user", "test_user", "mock_user",
 }
 
 def _resolve_user_id(customer_id: str) -> str | None:
@@ -745,19 +795,25 @@ async def run_email_safety_net() -> None:
                         "triggered_by": "safety_net",
                     })
 
-                    from db.email_store import log_email_message as _log_em
-                    _log_em(
-                        ticket_id=ticket_id,
-                        gmail_thread_id=gmail_thread_id,
-                        gmail_message_id=sent_id,
-                        direction="outbound",
-                        from_email=GMAIL_SUPPORT_EMAIL,
-                        from_name="Bitazza Support",
-                        subject=f"Re: {subject}",
-                        snippet=agent_response.text[:200],
-                        attachments=[],
-                        raw_headers={},
-                    )
+                    # Log outbound and update status independently — a logging
+                    # failure must not block the status update, otherwise the
+                    # ticket stays unreplied and the safety-net fires again.
+                    try:
+                        from db.email_store import log_email_message as _log_em
+                        _log_em(
+                            ticket_id=ticket_id,
+                            gmail_thread_id=gmail_thread_id,
+                            gmail_message_id=sent_id,
+                            direction="outbound",
+                            from_email=GMAIL_SUPPORT_EMAIL,
+                            from_name="Bitazza Support",
+                            subject=f"Re: {subject}",
+                            snippet=agent_response.text[:200],
+                            attachments=[],
+                            raw_headers={},
+                        )
+                    except Exception:
+                        logger.exception("[safety-net] Failed to log outbound for ticket %s — status update will still proceed", ticket_id)
 
                     if agent_response.resolved:
                         update_ticket_status(ticket_id, "Resolved")
@@ -835,10 +891,12 @@ async def gmail_pubsub_webhook(request: Request):
         for record in history_resp.get("history", []):
             for msg_added in record.get("messagesAdded", []):
                 msg = msg_added.get("message", {})
-                # Only inbound (not sent by us)
+                # Skip messages sent by us — check both SENT label and INBOX-only
+                # (Gmail API-sent messages sometimes only carry INBOX, not SENT)
                 label_ids = msg.get("labelIds", [])
-                if "SENT" not in label_ids:
-                    new_messages.append(msg.get("id"))
+                if "SENT" in label_ids:
+                    continue
+                new_messages.append(msg.get("id"))
 
         for gmail_message_id in new_messages:
             if gmail_message_id:
@@ -898,15 +956,18 @@ async def verify_identity(
 
 
 def _link_user_to_ticket(ticket_id: str, user_id: str) -> None:
-    """Update the customer row's external_id so account tools can fire."""
+    """Update the customer row's external_id so account tools can fire.
+    Overwrites NULL, empty, or known placeholder values (dev_user, test_user, etc.)
+    but never overwrites a real, already-verified external_id."""
     from db.conversation_store import _conn
+    placeholders = tuple(_INVALID_USER_ID_PLACEHOLDERS) + ("",)
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute("""
             UPDATE customers SET external_id = %s
             WHERE id = (SELECT customer_id FROM tickets WHERE id = %s)
-              AND (external_id IS NULL OR external_id = '')
-        """, (user_id, ticket_id))
+              AND (external_id IS NULL OR LOWER(external_id) = ANY(%s))
+        """, (user_id, ticket_id, list(placeholders)))
 
 
 async def _trigger_ai_after_verification(ticket_id: str, user_id: str) -> None:
@@ -939,8 +1000,8 @@ async def _trigger_ai_after_verification(ticket_id: str, user_id: str) -> None:
     from db.conversation_store import update_ticket_status
     update_ticket_status(ticket_id, "Open_Live")
 
-    from engine.mock_agents import detect_category_from_message
-    category = detect_category_from_message(original_body)
+    from engine.mock_agents import detect_category_from_message, classify_message_with_gemini
+    category = classify_message_with_gemini(original_body) or detect_category_from_message(original_body)
 
     # Use a fresh ephemeral conversation ID so chat() loads no prior history.
     # The polluted history (duplicate messages, pre-verification bot replies) would

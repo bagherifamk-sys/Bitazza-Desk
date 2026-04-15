@@ -54,7 +54,7 @@ class AttachmentMeta:
 
 @dataclass
 class ParsedEmail:
-    message_id: str           # Gmail Message-ID header (e.g. <abc@mail.gmail.com>)
+    message_id: str           # RFC Message-ID header (e.g. <abc@mail.gmail.com>)
     thread_id: str            # Gmail threadId field
     from_email: str
     from_name: str
@@ -66,6 +66,63 @@ class ParsedEmail:
     raw_headers: dict = field(default_factory=dict)
     in_reply_to: str = ""     # Message-ID of the email this replies to
     references: str = ""      # full References header chain
+    is_automated: bool = False  # True = system/bounce/newsletter — must not trigger AI reply
+    automated_reason: str = ""  # human-readable reason for logging
+
+
+# ── Automated email detection ─────────────────────────────────────────────────
+
+# Sender local-parts that are never real customers
+_AUTOMATED_SENDER_PATTERNS = re.compile(
+    r"^(mailer-daemon|postmaster|noreply|no-reply|bounce|bounces|"
+    r"notification|notifications|donotreply|do-not-reply|"
+    r"auto-?reply|daemon|devnull|dev-null|blackhole|"
+    r"return|returns|undeliverable|delivery-status)@",
+    re.IGNORECASE,
+)
+
+def _is_automated_email(headers: list[dict], from_email: str) -> tuple[bool, str]:
+    """
+    Detect whether this email is automated/system-generated and must not
+    trigger an AI reply. Checks both the sender address and standard headers
+    defined by RFC 3834, RFC 2076, and common bulk-mail conventions.
+    """
+    # 1. Sender address blocklist
+    if _AUTOMATED_SENDER_PATTERNS.match(from_email.strip()):
+        return True, f"automated sender: {from_email}"
+
+    def h(name: str) -> str:
+        return _get_header(headers, name).strip().lower()
+
+    # 2. RFC 3834 — Auto-Submitted header (auto-replied, auto-generated, etc.)
+    auto_submitted = h("Auto-Submitted")
+    if auto_submitted and auto_submitted != "no":
+        return True, f"Auto-Submitted: {auto_submitted}"
+
+    # 3. Delivery-Status-Notification / bounces
+    content_type = h("Content-Type")
+    if "delivery-status" in content_type or "report" in content_type:
+        return True, f"bounce/DSN Content-Type: {content_type[:80]}"
+
+    # 4. Mailing list / newsletter indicators
+    if _get_header(headers, "List-Unsubscribe"):
+        return True, "List-Unsubscribe header present (mailing list / newsletter)"
+    if _get_header(headers, "List-Id"):
+        return True, "List-Id header present (mailing list)"
+
+    # 5. Precedence: bulk or list (RFC 2076)
+    precedence = h("Precedence")
+    if precedence in ("bulk", "list", "junk"):
+        return True, f"Precedence: {precedence}"
+
+    # 6. X-Autoreply / X-Auto-Response-Suppress
+    if _get_header(headers, "X-Autoreply"):
+        return True, "X-Autoreply header present"
+    suppress = h("X-Auto-Response-Suppress")
+    if "all" in suppress or "autoreply" in suppress:
+        return True, f"X-Auto-Response-Suppress: {suppress}"
+
+    return False, ""
 
 
 # ── Header helpers ────────────────────────────────────────────────────────────
@@ -288,6 +345,8 @@ def parse_gmail_message(message: dict) -> ParsedEmail:
             message_id, len(rejected), reasons,
         )
 
+    is_automated, automated_reason = _is_automated_email(headers, from_email)
+
     return ParsedEmail(
         message_id=message_id,
         thread_id=thread_id,
@@ -301,6 +360,8 @@ def parse_gmail_message(message: dict) -> ParsedEmail:
         raw_headers=raw_headers,
         in_reply_to=in_reply_to,
         references=references,
+        is_automated=is_automated,
+        automated_reason=automated_reason,
     )
 
 

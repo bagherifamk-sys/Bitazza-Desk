@@ -6,7 +6,7 @@ account tools → Gemini Flash (JSON response with confidence) → compliance fi
 Gemini is instructed to return structured JSON: {response, confidence, needs_human}.
 This means escalation is driven by Gemini's own assessment, not post-hoc heuristics.
 """
-import json, re
+import json, logging, re, time
 from google import genai
 from google.genai import types as genai_types
 from google.genai import errors as genai_errors
@@ -28,6 +28,33 @@ from db.conversation_store import (
 from db.vector_store import collection_count
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+def _call_with_retry(fn, max_attempts: int = 3, base_delay: float = 0.5):
+    """
+    Call fn up to max_attempts times with exponential backoff.
+    Logs a WARNING per failed non-final attempt and ERROR on final failure.
+    Raises the last exception if all attempts are exhausted.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt < max_attempts:
+                logging.warning(
+                    "Gemini call failed (attempt %d/%d): %s — retrying in %.1fs",
+                    attempt, max_attempts, e, base_delay * attempt,
+                )
+                time.sleep(base_delay * attempt)
+            else:
+                logging.error(
+                    "Gemini call failed after %d attempts: %s",
+                    max_attempts, e,
+                )
+    raise last_exc  # type: ignore[misc]
+
 
 _LANG_KEYWORDS_TH = ["ขอ", "คุณ", "ไม่", "ได้", "ว่า", "ใน", "และ", "มี", "การ", "ที่"]
 
@@ -238,16 +265,20 @@ def chat(
         genai_types.Content(role="user", parts=[genai_types.Part(text=augmented_message)])
     ]
     try:
-        final_response = client.models.generate_content(
-            model=MODEL, contents=gemini_messages, config=config
+        final_response = _call_with_retry(
+            lambda: client.models.generate_content(model=MODEL, contents=gemini_messages, config=config)
         )
-    except genai_errors.APIError as e:
-        import logging
-        logging.error("Gemini API error: %s", e)
-        fallback = ("I'm having trouble connecting to our AI service right now. Please try again in a moment."
-                    if language == "en"
-                    else "ขณะนี้ไม่สามารถเชื่อมต่อกับระบบ AI ได้ กรุณาลองใหม่อีกครั้งในอีกสักครู่")
-        return AgentResponse(text=fallback, language=language)
+    except Exception as e:
+        ticket_id = get_ticket_id_by_conversation(conversation_id)
+        if ticket_id:
+            _escalation_status = "Escalated" if platform == "email" else "pending_human"
+            update_ticket_status(ticket_id, _escalation_status)
+        effective_category = detect_category_from_message(user_message) or category
+        return AgentResponse(
+            text=build_handoff_message(effective_category, language),
+            language=language, escalated=True,
+            escalation_reason="ai_service_unavailable", ticket_id=ticket_id,
+        )
 
     # 8. Handle function calls (account data lookups)
     account_data = {}
@@ -297,16 +328,20 @@ def chat(
         ]
         try:
             # Use free_config (no forced tool) so Gemini can now reply with text
-            final_response = client.models.generate_content(
-                model=MODEL, contents=gemini_messages, config=free_config
+            final_response = _call_with_retry(
+                lambda: client.models.generate_content(model=MODEL, contents=gemini_messages, config=free_config)
             )
-        except genai_errors.APIError as e:
-            import logging
-            logging.error("Gemini API error (tool loop): %s", e)
-            fallback = ("I'm having trouble connecting to our AI service right now. Please try again in a moment."
-                        if language == "en"
-                        else "ขณะนี้ไม่สามารถเชื่อมต่อกับระบบ AI ได้ กรุณาลองใหม่อีกครั้งในอีกสักครู่")
-            return AgentResponse(text=fallback, language=language)
+        except Exception as e:
+            ticket_id = get_ticket_id_by_conversation(conversation_id)
+            if ticket_id:
+                _escalation_status = "Escalated" if platform == "email" else "pending_human"
+                update_ticket_status(ticket_id, _escalation_status)
+            effective_category = detect_category_from_message(user_message) or category
+            return AgentResponse(
+                text=build_handoff_message(effective_category, language),
+                language=language, escalated=True,
+                escalation_reason="ai_service_unavailable", ticket_id=ticket_id,
+            )
 
     # 9. Extract and parse Gemini's JSON response
     raw_text = ""
@@ -334,9 +369,10 @@ def chat(
             update_ticket_status(ticket_id, _escalation_status)
         effective_category = detect_category_from_message(user_message) or category
         handoff = build_handoff_message(effective_category, language)
-        # If the model gave a substantive answer but escalation is only due to low confidence
-        # (not needs_human), show the answer first so the customer isn't left in the dark.
-        if not needs_human and response_text and len(response_text.strip()) > 20:
+        # Always show the AI's substantive answer before the handoff — whether escalation
+        # was triggered by needs_human=true or low confidence. The model was told to explain
+        # first and then set needs_human, so we must honour that explanation.
+        if response_text and len(response_text.strip()) > 20:
             combined_text = f"{response_text}\n\n{handoff}"
         else:
             combined_text = handoff

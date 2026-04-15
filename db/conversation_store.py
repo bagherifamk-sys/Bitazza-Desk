@@ -109,29 +109,29 @@ def _ensure_customer(cur, user_id: str) -> str:
     cur.execute("SELECT id, name FROM customers WHERE external_id = %s", (user_id,))
     row = cur.fetchone()
     if row:
-        if row["name"] and row["name"].startswith("widget:"):
-            # Profile fetch failed at creation time — retry now
-            try:
-                profile = _fetch_user_profile(user_id)
-                first = profile.get("first_name", "")
-                last  = profile.get("last_name", "")
-                display_name = f"{first} {last}".strip()
-                if display_name:
-                    email      = profile.get("email") or None
-                    phone      = profile.get("phone") or None
-                    tier       = profile.get("tier") or None
-                    kyc_status = (profile.get("kyc") or {}).get("status") or None
-                    cur.execute("""
-                        UPDATE customers
-                        SET name       = %s,
-                            email      = COALESCE(%s, email),
-                            phone      = COALESCE(%s, phone),
-                            tier       = COALESCE(%s, tier),
-                            kyc_status = COALESCE(%s, kyc_status)
-                        WHERE id = %s
-                    """, (display_name, email, phone, tier, kyc_status, row["id"]))
-            except Exception:
-                logger.exception("Failed to enrich profile for user_id=%s — keeping existing name", user_id)
+        # Always refresh kyc_status on every new ticket so stale/missing values are fixed.
+        # Also backfill name/email/tier if the row was created before the profile fetch succeeded.
+        try:
+            profile = _fetch_user_profile(user_id)
+            first = profile.get("first_name", "")
+            last  = profile.get("last_name", "")
+            display_name = f"{first} {last}".strip()
+            email      = profile.get("email") or None
+            phone      = profile.get("phone") or None
+            tier       = profile.get("tier") or None
+            kyc_status = (profile.get("kyc") or {}).get("status") or None
+            if display_name or kyc_status:
+                cur.execute("""
+                    UPDATE customers
+                    SET name       = COALESCE(NULLIF(%s,''), name),
+                        email      = COALESCE(%s, email),
+                        phone      = COALESCE(%s, phone),
+                        tier       = COALESCE(%s, tier),
+                        kyc_status = COALESCE(%s, kyc_status)
+                    WHERE id = %s
+                """, (display_name, email, phone, tier, kyc_status, row["id"]))
+        except Exception:
+            logger.exception("Failed to refresh profile for user_id=%s — continuing with cached data", user_id)
         return row["id"]
 
     # Fall back to name-tag lookup for rows created before external_id column existed
@@ -200,6 +200,158 @@ def create_conversation(user_id: str, platform: str, language: str = "en", issue
         """, (ticket_id, customer_id, issue_category or 'ai_handling', team))
 
     return ticket_id  # ticket_id IS the conversation_id in the Python layer
+
+
+def get_customer_id_for_user(user_id: str) -> str | None:
+    """Return the persistent customer UUID for a given widget user_id, or None if not found."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM customers WHERE external_id = %s", (user_id,))
+        row = cur.fetchone()
+    return row["id"] if row else None
+
+
+def get_customer_tickets(user_id: str, page: int = 1, limit: int = 10) -> list[dict]:
+    """
+    Return a paginated list of tickets for the given widget user_id, newest first.
+    Each entry includes: id, category, status, created_at (unix ts),
+    last_message (truncated to 100 chars), last_message_at (unix ts | None).
+    """
+    offset = (page - 1) * limit
+    with _conn() as conn:
+        cur = conn.cursor()
+        # Resolve user_id → customer_id
+        cur.execute("SELECT id FROM customers WHERE external_id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return []
+        customer_id = row["id"]
+
+        cur.execute("""
+            SELECT t.id, t.category, t.status, t.created_at,
+                   (SELECT content FROM messages
+                    WHERE ticket_id = t.id AND sender_type != 'internal_note'
+                    ORDER BY created_at DESC LIMIT 1) AS last_message,
+                   (SELECT created_at FROM messages
+                    WHERE ticket_id = t.id AND sender_type != 'internal_note'
+                    ORDER BY created_at DESC LIMIT 1) AS last_message_at
+            FROM tickets t
+            WHERE t.customer_id = %s
+            ORDER BY COALESCE(
+                (SELECT created_at FROM messages
+                 WHERE ticket_id = t.id AND sender_type != 'internal_note'
+                 ORDER BY created_at DESC LIMIT 1),
+                t.created_at
+            ) DESC
+            LIMIT %s OFFSET %s
+        """, (customer_id, limit, offset))
+        rows = cur.fetchall()
+
+    result = []
+    for r in rows:
+        last_msg = r.get("last_message")
+        if last_msg and len(last_msg) > 100:
+            last_msg = last_msg[:100]
+        last_msg_at = r.get("last_message_at")
+        # last_message_at may be a datetime object or a raw string (SQLite)
+        if last_msg_at is None:
+            lma_ts = None
+        elif hasattr(last_msg_at, "timestamp"):
+            lma_ts = int(last_msg_at.timestamp())
+        else:
+            try:
+                from datetime import datetime as _dt
+                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                    try:
+                        lma_ts = int(_dt.strptime(str(last_msg_at), fmt).timestamp())
+                        break
+                    except ValueError:
+                        pass
+                else:
+                    lma_ts = None
+            except Exception:
+                lma_ts = None
+        result.append({
+            "id": r["id"],
+            "category": r["category"],
+            "status": r["status"],
+            "created_at": int(r["created_at"].timestamp()) if r["created_at"] else 0,
+            "last_message": last_msg,
+            "last_message_at": lma_ts,
+        })
+    return result
+
+
+def get_paginated_history(conversation_id: str, page: int = 1, limit: int = 10) -> list[dict]:
+    """
+    Return a page of messages for a conversation, newest-first pagination.
+    Page 1 = most recent `limit` messages; page 2 = next oldest, etc.
+    Messages are returned in chronological order within the page.
+    """
+    offset = (page - 1) * limit
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT sender_type, content, created_at, metadata
+            FROM messages
+            WHERE ticket_id = %s
+              AND sender_type != 'internal_note'
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+        """, (conversation_id, limit, offset))
+        rows = cur.fetchall()
+
+    result = []
+    for r in reversed(rows):  # return in chronological order within the page
+        raw_meta = r["metadata"]
+        meta = json.loads(raw_meta) if isinstance(raw_meta, str) and raw_meta else (raw_meta or {})
+        if meta.get("is_internal_note"):
+            continue
+        entry: dict = {
+            "role": _sender_type_to_role(r["sender_type"]),
+            "content": r["content"],
+            "created_at": int(r["created_at"].timestamp()) if r["created_at"] else 0,
+        }
+        if r["sender_type"] == "agent" and meta.get("agent_name"):
+            entry["agent_name"] = meta["agent_name"]
+            entry["agent_avatar"] = meta.get("agent_avatar", meta["agent_name"][0].upper())
+            if meta.get("agent_avatar_url"):
+                entry["agent_avatar_url"] = meta["agent_avatar_url"]
+        result.append(entry)
+    return result
+
+
+def get_open_ticket_for_customer(user_id: str) -> dict | None:
+    """
+    Return the most recent Open_Live, Escalated, In_Progress, or Pending_Customer
+    ticket for the given widget user_id, or None if no such ticket exists.
+    """
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM customers WHERE external_id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        customer_id = row["id"]
+
+        cur.execute("""
+            SELECT id, category, status, created_at
+            FROM tickets
+            WHERE customer_id = %s
+              AND status IN ('Open_Live', 'Escalated', 'In_Progress', 'Pending_Customer')
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (customer_id,))
+        row = cur.fetchone()
+
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "category": row["category"],
+        "status": row["status"],
+        "created_at": int(row["created_at"].timestamp()) if row["created_at"] else 0,
+    }
 
 
 def get_or_create_customer_by_email(email: str, name: str = "") -> tuple[str | None, bool]:
@@ -1038,7 +1190,7 @@ def get_unreplied_email_tickets() -> list[dict]:
             FROM tickets t
             JOIN customers c ON c.id = t.customer_id
             WHERE t.channel = 'email'
-              AND t.status NOT IN ('Closed_Resolved', 'Closed_Unresponsive', 'Pending_Customer')
+              AND t.status NOT IN ('Closed_Resolved', 'Closed_Unresponsive', 'Pending_Customer', 'Resolved', 'Escalated')
               AND EXISTS (
                   SELECT 1 FROM email_threads et
                   WHERE et.ticket_id = t.id AND et.direction = 'inbound'

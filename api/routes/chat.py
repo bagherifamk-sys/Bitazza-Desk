@@ -3,7 +3,12 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel
 from api.middleware.auth import get_user_id
 from api.ws_manager import manager
-from db.conversation_store import init_db, create_conversation, add_message, get_history, create_ticket, assign_ai_persona, get_ai_persona, is_human_handling, update_ticket_category, count_consecutive_low_confidence
+from db.conversation_store import (
+    init_db, create_conversation, add_message, get_history, get_paginated_history,
+    create_ticket, assign_ai_persona, get_ai_persona, is_human_handling,
+    update_ticket_category, count_consecutive_low_confidence,
+    get_customer_id_for_user, get_customer_tickets, get_open_ticket_for_customer,
+)
 from engine.agent import chat
 from engine.mock_agents import pick_agent
 from engine.prompt_templates import build_greeting
@@ -19,6 +24,7 @@ class StartRequest(BaseModel):
 class StartResponse(BaseModel):
     conversation_id: str
     ticket_id: str
+    customer_id: str
     agent_name: str
     agent_avatar: str
     agent_avatar_url: str
@@ -84,9 +90,11 @@ async def start_conversation(body: StartRequest, user_id: str = Depends(get_user
             "customer": {"id": user_id, "name": "—", "tier": "Standard"},
         },
     })
+    customer_id = get_customer_id_for_user(user_id) or user_id
     return StartResponse(
         conversation_id=cid,
         ticket_id=tid,
+        customer_id=customer_id,
         agent_name=agent["name"],
         agent_avatar=agent["avatar"],
         agent_avatar_url=agent["avatar_url"],
@@ -215,11 +223,36 @@ def submit_csat(body: CSATRequest, user_id: str = Depends(get_user_id)):
 
 
 @router.get("/history/{conversation_id}")
-def get_conversation_history(conversation_id: str, user_id: str = Depends(get_user_id)):
+def get_conversation_history(
+    conversation_id: str,
+    page: int | None = None,
+    limit: int | None = None,
+    user_id: str = Depends(get_user_id),
+):
+    if page is not None and limit is not None:
+        history = get_paginated_history(conversation_id, page=page, limit=limit)
+    else:
+        history = get_history(conversation_id, limit=50)
     return {
-        "history": get_history(conversation_id, limit=50),
+        "history": history,
         "human_handling": is_human_handling(conversation_id),
     }
+
+
+@router.get("/customer-tickets")
+def list_customer_tickets(
+    page: int = 1,
+    limit: int = 10,
+    user_id: str = Depends(get_user_id),
+):
+    tickets = get_customer_tickets(user_id, page=page, limit=limit)
+    return {"tickets": tickets}
+
+
+@router.get("/open-ticket")
+def get_open_ticket(user_id: str = Depends(get_user_id)):
+    ticket = get_open_ticket_for_customer(user_id)
+    return {"ticket": ticket}
 
 
 @router.websocket("/ws/{conversation_id}")

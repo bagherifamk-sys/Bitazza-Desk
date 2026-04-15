@@ -27,7 +27,7 @@ export default function CategoryPicker({ lang, primaryColor, onSelect, disabled 
   }
 
   return (
-    <div className="csbot-category-mosaic">
+    <div data-testid="category-picker" className="csbot-category-mosaic">
       {pairs.map((row, ri) => (
         <div key={ri} className="csbot-mosaic-row">
           {row.map((cat, ci) =>

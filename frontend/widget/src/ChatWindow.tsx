@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Message, CSBotConfig, IssueCategory } from './types';
 import { ISSUE_CATEGORIES } from './types';
-import { startConversation, sendMessage, fetchHistory, setCategoryAgent, getStoredSession, storeSessionLang, storeSessionCategory, storeSessionAgent, clearStoredSession } from './api';
+import { startConversation, sendMessage, fetchHistory, setCategoryAgent, getStoredSession, storeSessionLang, storeSessionCategory, storeSessionAgent, clearStoredSession, fetchCustomerTickets, fetchOpenTicket, getStoredCustomerId } from './api';
+import type { PastTicket } from './api';
 import MessageBubble from './MessageBubble';
 import TypingIndicator from './TypingIndicator';
 import CategoryPicker from './CategoryPicker';
+import PrevConversations from './PrevConversations';
 
 function playNotificationBeep() {
   try {
@@ -26,9 +28,32 @@ function playNotificationBeep() {
   }
 }
 
+const CATEGORY_LABEL_SHORT: Record<string, { en: string; th: string }> = {
+  ai_handling:         { en: 'Support',             th: 'การสนับสนุน' },
+  kyc_verification:    { en: 'KYC Verification',    th: 'KYC' },
+  account_restriction: { en: 'Account Restricted',  th: 'บัญชีถูกระงับ' },
+  password_2fa_reset:  { en: 'Password/2FA',        th: 'รหัสผ่าน/2FA' },
+  fraud_security:      { en: 'Fraud/Security',      th: 'การฉ้อโกง' },
+  withdrawal_issue:    { en: 'Withdrawal',           th: 'การถอนเงิน' },
+  other:               { en: 'Other',                th: 'อื่นๆ' },
+};
+
+function relativeDate(unixTs: number, lang: 'en' | 'th'): string {
+  const diff = Math.floor((Date.now() / 1000 - unixTs) / 86400);
+  if (lang === 'th') {
+    if (diff === 0) return 'วันนี้';
+    if (diff === 1) return 'เมื่อวาน';
+    return `${diff} วันที่แล้ว`;
+  }
+  if (diff === 0) return 'today';
+  if (diff === 1) return 'yesterday';
+  return `${diff} days ago`;
+}
+
 const UI_TEXT = {
   en: {
     placeholder: 'Type your message...',
+    placeholderConnecting: 'Please wait for the agent to respond...',
     send: 'Send',
     header: 'Support',
     escalationBanner: 'Connecting you to a support agent...',
@@ -37,6 +62,7 @@ const UI_TEXT = {
   },
   th: {
     placeholder: 'พิมพ์ข้อความของคุณ...',
+    placeholderConnecting: 'กรุณารอการตอบกลับจากเจ้าหน้าที่...',
     send: 'ส่ง',
     header: 'ฝ่ายสนับสนุน',
     escalationBanner: 'กำลังเชื่อมต่อกับเจ้าหน้าที่สนับสนุน...',
@@ -70,6 +96,11 @@ export default function ChatWindow({ cfg, onClose }: Props) {
   const [csatPending, setCsatPending] = useState(false);
   const [csatSubmitted, setCsatSubmitted] = useState(false);
   const [agentClosureRequest, setAgentClosureRequest] = useState(false);
+  const [prevTickets, setPrevTickets] = useState<PastTicket[]>([]);
+  const [showPrevTickets, setShowPrevTickets] = useState(false);
+  const [openTicket, setOpenTicket] = useState<PastTicket | null>(null);
+  const [showOpenTicketBanner, setShowOpenTicketBanner] = useState(false);
+  const [awaitingFirstReply, setAwaitingFirstReply] = useState(false);
   const lastAgentMsgTime = useRef(0);
   const lastFailedText = useRef('');
   const sendRef = useRef<((text: string, category?: string, skipUserBubble?: boolean) => Promise<void>) | null>(null);
@@ -164,6 +195,16 @@ export default function ChatWindow({ cfg, onClose }: Props) {
   const selectCategory = useCallback((category: IssueCategory) => {
     setSelectedCategory(category);
     storeSessionCategory(category);
+    setAwaitingFirstReply(true);
+    // Load previous tickets for returning customers
+    if (getStoredCustomerId()) {
+      fetchCustomerTickets(cfg, 1, 20).then((tickets) => {
+        if (tickets.length > 0) {
+          setPrevTickets(tickets);
+          setShowPrevTickets(true);
+        }
+      });
+    }
     const cat = ISSUE_CATEGORIES.find((c) => c.key === category)!;
     const openingMsg = cat.openingMessage[lang];
 
@@ -213,15 +254,47 @@ export default function ChatWindow({ cfg, onClose }: Props) {
     setLang(selected);
     setLangSelected(true);
     storeSessionLang(selected);
-    // Show a static category-prompt message only — no AI agent call until category is selected
-    setMessages((prev) => [...prev, {
-      id: 'category-prompt',
-      role: 'assistant',
-      content: CATEGORY_PROMPT[selected],
-      timestamp: Date.now(),
-      senderName: 'Bitazza Support',
-    }]);
-  }, []);
+    // Check for an open ticket from a previous session (only if customer_id is known)
+    if (getStoredCustomerId()) {
+      fetchOpenTicket(cfg).then((ticket) => {
+        if (!ticket) {
+          setMessages((prev) => [...prev, {
+            id: 'category-prompt',
+            role: 'assistant',
+            content: CATEGORY_PROMPT[selected],
+            timestamp: Date.now(),
+            senderName: 'Bitazza Support',
+          }]);
+          return;
+        }
+        // Verify the ticket actually has messages before showing the resume banner.
+        // A ticket can be "open" in the DB (created via dashboard/email) while having
+        // zero messages in the widget conversation store — nothing to resume in that case.
+        fetchHistory(cfg, ticket.id).then(({ messages: history }) => {
+          if (history.length > 0) {
+            setOpenTicket(ticket);
+            setShowOpenTicketBanner(true);
+          } else {
+            setMessages((prev) => [...prev, {
+              id: 'category-prompt',
+              role: 'assistant',
+              content: CATEGORY_PROMPT[selected],
+              timestamp: Date.now(),
+              senderName: 'Bitazza Support',
+            }]);
+          }
+        });
+      });
+    } else {
+      setMessages((prev) => [...prev, {
+        id: 'category-prompt',
+        role: 'assistant',
+        content: CATEGORY_PROMPT[selected],
+        timestamp: Date.now(),
+        senderName: 'Bitazza Support',
+      }]);
+    }
+  }, [cfg]);
 
   // Auto-scroll
   useEffect(() => {
@@ -407,9 +480,10 @@ export default function ChatWindow({ cfg, onClose }: Props) {
       // Keep user message visible but mark error
     } finally {
       setLoading(false);
+      setAwaitingFirstReply(false);
       inputRef.current?.focus();
     }
-  }, [convId, loading, consecutiveLow, selectedCategory, cfg, t]);
+  }, [convId, loading, consecutiveLow, selectedCategory, cfg, t, awaitingFirstReply]);
 
   // Keep sendRef current so selectCategory can call send before it's in scope
   useEffect(() => { sendRef.current = send; }, [send]);
@@ -492,8 +566,74 @@ export default function ChatWindow({ cfg, onClose }: Props) {
         </div>
       ) : null}
 
+      {/* Open ticket banner — shown after lang selection if customer has an unresolved ticket */}
+      {showOpenTicketBanner && openTicket && (
+        <div data-testid="open-ticket-banner" className="px-4 py-3 bg-amber-50 border-b border-amber-100">
+          <p className="text-xs text-amber-800 font-medium mb-2">
+            {lang === 'th'
+              ? `คุณมีการสนทนา "${CATEGORY_LABEL_SHORT[openTicket.category]?.[lang] ?? openTicket.category}" ที่ยังค้างอยู่ (${relativeDate(openTicket.created_at, lang)})`
+              : `You have an open "${CATEGORY_LABEL_SHORT[openTicket.category]?.[lang] ?? openTicket.category}" conversation from ${relativeDate(openTicket.created_at, lang)}`
+            }
+          </p>
+          <div className="flex gap-2">
+            <button
+              data-testid="continue-ticket-btn"
+              onClick={() => {
+                setShowOpenTicketBanner(false);
+                setConvId(openTicket.id);
+                setSelectedCategory(openTicket.category as IssueCategory);
+                // Load history for the resumed ticket
+                fetchHistory(cfg, openTicket.id).then(({ messages: history, humanHandling }) => {
+                  const restored: Message[] = history.map((m) => ({
+                    id: `restored-${m.created_at}`,
+                    role: m.role as Message['role'],
+                    content: m.content,
+                    timestamp: m.created_at * 1000,
+                    agentName: m.agent_name ?? undefined,
+                    agentAvatar: m.agent_avatar ?? undefined,
+                    agentAvatarUrl: m.agent_avatar_url ?? undefined,
+                  }));
+                  setMessages(restored);
+                  if (humanHandling) {
+                    setEscalated(true);
+                    setEscalatedAgent({ name: 'Support Agent', avatar: 'S', avatarUrl: null });
+                  }
+                });
+              }}
+              className="px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600 transition-colors"
+            >
+              {lang === 'th' ? 'ดำเนินการต่อ' : 'Continue it'}
+            </button>
+            <button
+              data-testid="start-new-btn"
+              onClick={() => {
+                setShowOpenTicketBanner(false);
+                setMessages((prev) => [...prev, {
+                  id: 'category-prompt',
+                  role: 'assistant',
+                  content: CATEGORY_PROMPT[lang],
+                  timestamp: Date.now(),
+                  senderName: 'Bitazza Support',
+                }]);
+              }}
+              className="px-3 py-1.5 rounded-full text-xs font-semibold bg-white border border-amber-300 text-amber-700 hover:bg-amber-50 transition-colors"
+            >
+              {lang === 'th' ? 'เริ่มใหม่' : 'Start new'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Messages */}
       <div className="csbot-messages flex-1 overflow-y-auto px-4 py-4 space-y-1">
+        {showPrevTickets && (
+          <PrevConversations
+            tickets={prevTickets}
+            cfg={cfg}
+            lang={lang}
+            primaryColor={primaryColor}
+          />
+        )}
         {messages.map((m) => <MessageBubble key={m.id} message={m} primaryColor={primaryColor} botName={botName} botAvatarUrl={botAvatarUrl} escalatedAgent={escalatedAgent} />)}
         {(() => {
           const lastResMsg = [...messages].reverse().find((m) => m.offerResolution);
@@ -641,7 +781,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
             </button>
           </div>
         )}
-        {langSelected && !selectedCategory && !escalated && (
+        {langSelected && !selectedCategory && !escalated && !showOpenTicketBanner && (
           <CategoryPicker
             lang={lang}
             primaryColor={primaryColor}
@@ -669,13 +809,13 @@ export default function ChatWindow({ cfg, onClose }: Props) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={!langSelected ? 'Select a language / เลือกภาษา' : !selectedCategory ? (lang === 'th' ? 'เลือกประเภทปัญหาด้านบน' : 'Select an issue type above') : t.placeholder}
-          disabled={loading || !convId || !langSelected || !selectedCategory || csatPending || csatSubmitted || agentClosureRequest}
+          placeholder={!langSelected ? 'Select a language / เลือกภาษา' : !selectedCategory ? (lang === 'th' ? 'เลือกประเภทปัญหาด้านบน' : 'Select an issue type above') : awaitingFirstReply ? t.placeholderConnecting : t.placeholder}
+          disabled={loading || !convId || !langSelected || !selectedCategory || awaitingFirstReply || csatPending || csatSubmitted || agentClosureRequest}
           className="csbot-input flex-1 text-sm px-4 py-2.5 outline-none disabled:opacity-40"
         />
         <button
           onClick={() => send(input)}
-          disabled={loading || !input.trim() || !convId || !langSelected || !selectedCategory || csatPending || csatSubmitted || agentClosureRequest}
+          disabled={loading || !input.trim() || !convId || !langSelected || !selectedCategory || awaitingFirstReply || csatPending || csatSubmitted || agentClosureRequest}
           className="csbot-send-btn w-9 h-9 rounded-full flex items-center justify-center text-white transition-all disabled:opacity-30"
           style={{ background: `linear-gradient(135deg, ${primaryColor}, ${primaryColor}cc)` }}
           aria-label={t.send}

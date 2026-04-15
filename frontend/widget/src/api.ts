@@ -8,6 +8,7 @@ function getHeaders(cfg: CSBotConfig): HeadersInit {
 
 const SESSION_KEY = 'csbot_session';
 const SESSION_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
+const CUSTOMER_KEY = 'csbot_customer_id'; // permanent — no TTL
 
 export interface StoredAgent {
   name: string;
@@ -24,6 +25,20 @@ export interface StoredSession {
 
 export function clearStoredSession() {
   localStorage.removeItem(SESSION_KEY);
+}
+
+export function getStoredCustomerId(): string | null {
+  try {
+    return localStorage.getItem(CUSTOMER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeCustomerId(id: string) {
+  try {
+    localStorage.setItem(CUSTOMER_KEY, id);
+  } catch { /* storage unavailable */ }
 }
 
 export function getStoredSession(): StoredSession | null {
@@ -86,6 +101,7 @@ export async function startConversation(cfg: CSBotConfig): Promise<string> {
     if (!res.ok) throw new Error(`start failed: ${res.status}`);
     const data = await res.json();
     storeSession(data.conversation_id);
+    if (data.customer_id) storeCustomerId(data.customer_id);
     return data.conversation_id as string;
   })().finally(() => { _startPromise = null; });
   return _startPromise;
@@ -158,6 +174,60 @@ export async function fetchHistory(cfg: CSBotConfig, conversationId: string): Pr
   if (!res.ok) return { messages: [], humanHandling: false };
   const data = await res.json();
   return { messages: data.history ?? [], humanHandling: data.human_handling ?? false };
+}
+
+export interface PastTicket {
+  id: string;
+  category: string;
+  status: string;
+  created_at: number;
+  last_message: string | null;
+  last_message_at: number | null;
+}
+
+export async function fetchCustomerTickets(cfg: CSBotConfig, page = 1, limit = 10): Promise<PastTicket[]> {
+  try {
+    const res = await fetch(`${cfg.apiUrl}/chat/customer-tickets?page=${page}&limit=${limit}`, {
+      headers: getHeaders(cfg),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.tickets ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchOpenTicket(cfg: CSBotConfig): Promise<PastTicket | null> {
+  try {
+    const res = await fetch(`${cfg.apiUrl}/chat/open-ticket`, {
+      headers: getHeaders(cfg),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.ticket ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchPaginatedHistory(
+  cfg: CSBotConfig,
+  conversationId: string,
+  page: number,
+  limit = 10,
+): Promise<HistoryResult> {
+  try {
+    const res = await fetch(
+      `${cfg.apiUrl}/chat/history/${conversationId}?page=${page}&limit=${limit}`,
+      { headers: getHeaders(cfg) },
+    );
+    if (!res.ok) return { messages: [], humanHandling: false };
+    const data = await res.json();
+    return { messages: data.history ?? [], humanHandling: data.human_handling ?? false };
+  } catch {
+    return { messages: [], humanHandling: false };
+  }
 }
 
 export async function sendMessage(

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { usePerm } from '../PermissionContext';
 import type { Ticket, TicketStatus, Priority, Agent } from '../types';
 import { api } from '../api';
@@ -111,6 +112,7 @@ const PANEL_TABS = [
 
 export default function PropertiesPanel({ ticket, onUpdate, partialDraft = '', onAcceptDraft, onSelectTicket }: Props) {
   const canAssign = usePerm('inbox.assign');
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'details' | 'copilot'>('details');
   const [agents, setAgents] = useState<Agent[]>([]);
   const [showReassign, setShowReassign] = useState(false);
@@ -188,7 +190,13 @@ export default function PropertiesPanel({ ticket, onUpdate, partialDraft = '', o
               <div className="flex items-center gap-2.5 mb-3">
                 <Avatar name={ticket.customer?.name ?? 'U'} size="md" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-semibold text-text-primary truncate">{ticket.customer?.name ?? '—'}</div>
+                  <button
+                    className="text-sm font-semibold text-text-primary truncate hover:text-brand hover:underline text-left w-full"
+                    onClick={() => {
+                      const uid = ticket.customer?.bitazza_uid ?? ticket.customer?.user_id;
+                      if (uid) navigate(`/users?uid=${uid}`);
+                    }}
+                  >{ticket.customer?.name ?? '—'}</button>
                   <div className="text-xs text-text-muted truncate">{ticket.customer?.email ?? '—'}</div>
                 </div>
                 {tier !== 'Standard' && (

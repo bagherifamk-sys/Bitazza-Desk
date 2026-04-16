@@ -178,20 +178,28 @@ TOOL_DEFINITIONS = [
     {
         "name": "get_user_profile",
         "description": (
-            "Get the full profile of the authenticated user, including their name, email, "
-            "phone number, account tier, and KYC verification status. "
-            "Use this when the customer asks about their account details or KYC status."
+            "Get the full profile of the authenticated user: name, email, phone, account tier, "
+            "and KYC verification status (kyc.status, kyc.rejection_reason, kyc.reviewed_at). "
+            "Call this FIRST for any account-specific issue — KYC status is a cross-cutting signal "
+            "that can explain withdrawal failures, deposit blocks, and account restrictions."
         ),
         "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "get_kyc_status",
-        "description": "Get only the KYC verification status for the authenticated user.",
+        "description": (
+            "Get only the KYC verification status for the authenticated user. "
+            "Use get_user_profile instead when you need the full picture."
+        ),
         "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "get_deposit_status",
-        "description": "Get deposit status for the authenticated user. Optionally specify a transaction ID.",
+        "description": (
+            "Get deposit status for the authenticated user. Optionally specify a transaction ID. "
+            "Call this AFTER get_user_profile and get_account_restrictions — a KYC issue or active "
+            "account restriction is often the real cause of a deposit failure, not the transaction itself."
+        ),
         "parameters": {
             "type": "object",
             "properties": {"tx_id": {"type": "string", "description": "Optional transaction ID"}},
@@ -199,7 +207,13 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_withdrawal_status",
-        "description": "Get withdrawal status for the authenticated user. Optionally specify a transaction ID.",
+        "description": (
+            "Get withdrawal status for the authenticated user. Optionally specify a transaction ID. "
+            "Call this AFTER get_user_profile and get_account_restrictions — unapproved KYC or an "
+            "active account restriction is often the root cause of a blocked withdrawal, not the "
+            "transaction state. Only use this for transaction-level details once account-level causes "
+            "have been ruled out."
+        ),
         "parameters": {
             "type": "object",
             "properties": {"tx_id": {"type": "string", "description": "Optional transaction ID"}},
@@ -207,7 +221,12 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_account_restrictions",
-        "description": "Get any active restrictions or freezes on the authenticated user's account.",
+        "description": (
+            "Get any active restrictions or freezes on the authenticated user's account. "
+            "Call this for ANY reported blockage — withdrawal failures, deposit issues, trading blocks, "
+            "or account access problems. An active restriction is often the root cause of all of these. "
+            "Always cross-reference with get_user_profile results to explain why the restriction exists."
+        ),
         "parameters": {"type": "object", "properties": {}},
     },
     {

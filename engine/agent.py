@@ -224,11 +224,16 @@ def chat(
     # For categories that require live account data, force a tool call on the first turn
     # so Gemini cannot reply with a holding message before fetching the user's data.
     # "other" category: never call account tools — answer from RAG only.
+    # Always start with get_user_profile for every account-specific category.
+    # KYC status, account tier, and profile flags are cross-cutting — a withdrawal
+    # block may be caused by a KYC rejection, and a restriction may stem from a
+    # suspicious withdrawal pattern. Starting from the profile lets Gemini see the
+    # full picture and connect root causes before calling any secondary tools.
     _FORCE_TOOL_CATEGORIES = {"kyc_verification", "account_restriction", "withdrawal_issue"}
     _FORCE_TOOL_NAMES = {
         "kyc_verification": "get_user_profile",
-        "account_restriction": "get_account_restrictions",
-        "withdrawal_issue": "get_withdrawal_status",
+        "account_restriction": "get_user_profile",
+        "withdrawal_issue": "get_user_profile",
     }
     # Force tool call if the category requires account data AND no successful (non-escalated)
     # bot reply exists yet. This handles retries where the first turn escalated before

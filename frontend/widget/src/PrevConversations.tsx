@@ -68,13 +68,18 @@ function TicketThread({ ticket, cfg, lang, primaryColor }: TicketThreadProps) {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const loadingRef = useRef(false);
+  const hasMoreRef = useRef(true);
+  const pageRef = useRef(1);
   const LIMIT = 10;
 
   const loadPage = useCallback(async (p: number) => {
+    loadingRef.current = true;
     setLoading(true);
     const { messages: msgs } = await fetchPaginatedHistory(cfg, ticket.id, p, LIMIT);
+    loadingRef.current = false;
     setLoading(false);
-    if (msgs.length < LIMIT) setHasMore(false);
+    if (msgs.length < LIMIT) { hasMoreRef.current = false; setHasMore(false); }
     const mapped: HistoryMsg[] = msgs.map((m, i) => ({
       id: `${ticket.id}-p${p}-${i}`,
       role: m.role as HistoryMsg['role'],
@@ -101,22 +106,24 @@ function TicketThread({ ticket, cfg, lang, primaryColor }: TicketThreadProps) {
   }, [expanded, loadPage]);
 
   // Scroll-up to load older messages (oldest shown at top, newest at bottom)
-  const handleScroll = useCallback(() => {
-    const el = messagesRef.current;
-    if (!el || loading || !hasMore) return;
-    if (el.scrollTop <= 40) {
-      const nextPage = page + 1;
-      setPage(nextPage);
-      loadPage(nextPage);
-    }
-  }, [loading, hasMore, page, loadPage]);
-
+  // Uses refs so the listener is registered once and always reads current values,
+  // avoiding the stale-closure race where loading/hasMore/page are captured at
+  // registration time and lag behind state updates.
   useEffect(() => {
     const el = messagesRef.current;
     if (!el) return;
+    const handleScroll = () => {
+      if (!el || loadingRef.current || !hasMoreRef.current) return;
+      if (el.scrollTop <= 40) {
+        const nextPage = pageRef.current + 1;
+        pageRef.current = nextPage;
+        setPage(nextPage);
+        loadPage(nextPage);
+      }
+    };
     el.addEventListener('scroll', handleScroll);
     return () => el.removeEventListener('scroll', handleScroll);
-  }, [handleScroll]);
+  }, [loadPage, expanded]);
 
   const catLabel = CATEGORY_LABEL[ticket.category]?.[lang] ?? ticket.category;
   const dateLabel = relativeDate(ticket.created_at, lang);

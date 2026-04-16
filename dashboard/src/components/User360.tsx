@@ -645,7 +645,7 @@ export default function User360() {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {!user ? (
-          <div className="p-6 max-w-5xl">
+          <div className="p-6">
             <div className="bg-surface-1 ring-1 ring-surface-5 rounded-xl overflow-hidden">
               <div className="px-5 py-3 border-b border-surface-5 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-text-primary">All Customers</h2>
@@ -656,6 +656,7 @@ export default function User360() {
                 <Skeleton rows={10} />
               ) : custList && custList.items.length > 0 ? (
                 <>
+                  <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-surface-5 text-xs text-text-muted uppercase tracking-wide">
@@ -699,6 +700,7 @@ export default function User360() {
                       })}
                     </tbody>
                   </table>
+                  </div>
                   <Pagination
                     page={custPage}
                     total={custList.total}
@@ -712,7 +714,7 @@ export default function User360() {
             </div>
           </div>
         ) : (
-          <div className="p-6 space-y-5 max-w-6xl">
+          <div className="p-6 space-y-5">
             {/* Back to list */}
             <button
               onClick={() => { setUser(null); setSearchParams({}); }}

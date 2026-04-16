@@ -68,7 +68,6 @@ uvicorn api.main:app --reload            # run API server
 - [x] Phase 1 frontend: React chat widget (Widget, ChatWindow, CategoryPicker, PrevConversations) + Playwright e2e
 - [x] Phase 1 dashboard: CS agent dashboard UI (HomeDashboard, SupervisorDashboard, ConversationList, CopilotPanel, AIStudio, AnalyticsDashboard, and more)
 - [x] Email channel: Gmail ingestion, email parser, email store, processing claims (migrations 004–006)
-- [ ] Remaining: Yellow.ai ticket analysis · account tools real API integration · rate limiting · CORS lockdown
 
 ## Data (Phase 0 results — 3,438 tickets)
 Top categories: kyc_verification 21% · account_restriction 19% · password_2fa_reset 10% · fraud_security 7% · withdrawal_issue 7%

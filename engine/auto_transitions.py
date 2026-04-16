@@ -16,6 +16,15 @@ import logging
 from db.conversation_store import get_tickets_for_auto_transition, update_ticket_status
 from db.email_store import get_pending_verification_tickets
 
+
+def is_workflow_active(ticket_id: str, **kwargs) -> bool:
+    """Fail-open guard: if workflow_engine is unavailable, returns False."""
+    try:
+        from workflow_engine.store import is_workflow_active as _fn
+        return _fn(ticket_id, **kwargs)
+    except Exception:
+        return False
+
 logger = logging.getLogger(__name__)
 
 INTERVAL_SECONDS = 300        # run every 5 minutes
@@ -28,6 +37,9 @@ async def run_auto_transitions() -> None:
         buckets = get_tickets_for_auto_transition()
 
         for ticket in buckets.get("pending_customer_expired", []):
+            if is_workflow_active(ticket["id"]):
+                logger.debug("Skipping auto-transition for ticket %s — workflow active", ticket["id"])
+                continue
             # Email tickets with no customer reply after 48h → auto-resolve
             # Widget/other channel tickets → snooze (existing behaviour)
             if ticket.get("channel") == "email":
@@ -44,10 +56,16 @@ async def run_auto_transitions() -> None:
                 )
 
         for ticket in buckets.get("snoozed_expired", []):
+            if is_workflow_active(ticket["id"]):
+                logger.debug("Skipping auto-transition for ticket %s — workflow active", ticket["id"])
+                continue
             update_ticket_status(ticket["id"], "closed")
             logger.info("Auto-closed ticket %s (snooze expired)", ticket["id"])
 
         for ticket in buckets.get("resolved_expired", []):
+            if is_workflow_active(ticket["id"]):
+                logger.debug("Skipping auto-transition for ticket %s — workflow active", ticket["id"])
+                continue
             update_ticket_status(ticket["id"], "closed")
             logger.info("Auto-closed ticket %s (resolved 24h timeout)", ticket["id"])
 

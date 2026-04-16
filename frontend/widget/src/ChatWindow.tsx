@@ -195,7 +195,6 @@ export default function ChatWindow({ cfg, onClose }: Props) {
   const selectCategory = useCallback((category: IssueCategory) => {
     setSelectedCategory(category);
     storeSessionCategory(category);
-    setAwaitingFirstReply(true);
     // Load previous tickets for returning customers
     if (getStoredCustomerId()) {
       fetchCustomerTickets(cfg, 1, 20).then((tickets) => {
@@ -217,6 +216,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
     }]);
 
     if (convId) {
+      setAwaitingFirstReply(true);
       setCategoryAgent(cfg, convId, category).then(({ agentName, agentAvatarUrl }) => {
         const resolvedName = agentName ?? 'Support Agent';
         setBotName(resolvedName);
@@ -483,7 +483,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
       setAwaitingFirstReply(false);
       inputRef.current?.focus();
     }
-  }, [convId, loading, consecutiveLow, selectedCategory, cfg, t, awaitingFirstReply]);
+  }, [convId, loading, consecutiveLow, selectedCategory, cfg, t]);
 
   // Keep sendRef current so selectCategory can call send before it's in scope
   useEffect(() => { sendRef.current = send; }, [send]);

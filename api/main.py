@@ -12,6 +12,7 @@ from api.routes.copilot import router as copilot_router
 from api.routes.dashboard import router as dashboard_router
 from api.routes.email import router as email_router
 from api.routes.knowledge import router as knowledge_router
+from api.routes.studio import router as studio_router
 from db.conversation_store import init_db
 from engine.auto_transitions import start_auto_transition_loop
 
@@ -100,6 +101,7 @@ app.include_router(copilot_router)
 app.include_router(dashboard_router)
 app.include_router(email_router)
 app.include_router(knowledge_router)
+app.include_router(studio_router)
 
 # Mount mock User/KYC API and token issuer only in development
 if settings.USE_MOCK_USER_API:

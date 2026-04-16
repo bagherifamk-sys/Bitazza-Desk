@@ -84,9 +84,11 @@ export async function setupMockApiReturningUser(page: Page) {
     })
   );
 
-  // GET /chat/history/:id — previous KYC ticket
-  await page.route(`**/chat/history/${PREV_TICKET_1.id}**`, (route) =>
-    route.fulfill({
+  // GET /chat/history/:id — previous KYC ticket (paginated and unpaged)
+  // Using RegExp so query-string requests (?page=1&limit=10) are matched reliably.
+  await page.route(
+    new RegExp(`/chat/history/${PREV_TICKET_1.id}`),
+    (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ history: KYC_HISTORY, human_handling: false }),
@@ -94,8 +96,9 @@ export async function setupMockApiReturningUser(page: Page) {
   );
 
   // GET /chat/history/:id — previous password ticket
-  await page.route(`**/chat/history/${PREV_TICKET_2.id}**`, (route) =>
-    route.fulfill({
+  await page.route(
+    new RegExp(`/chat/history/${PREV_TICKET_2.id}`),
+    (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ history: [], human_handling: false }),

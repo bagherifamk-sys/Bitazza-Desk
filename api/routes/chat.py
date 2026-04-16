@@ -9,7 +9,7 @@ from db.conversation_store import (
     update_ticket_category, count_consecutive_low_confidence,
     get_customer_id_for_user, get_customer_tickets, get_open_ticket_for_customer,
 )
-from engine.agent import chat
+from workflow_engine.interceptor import workflow_interceptor as chat
 from engine.mock_agents import pick_agent
 from engine.prompt_templates import build_greeting
 

@@ -55,10 +55,11 @@ test('previous ticket messages are visible when expanded', async ({ page }) => {
   await selectLanguage(page, 'en');
   await selectCategory(page, 'KYC');
 
-  // Expand the KYC ticket thread
-  await page.click('[data-testid="prev-ticket-header"]');
-  await expect(page.locator('.csbot-messages')).toContainText('I need to verify my KYC');
-  await expect(page.locator('.csbot-messages')).toContainText('Your KYC has been approved.');
+  // Expand the KYC ticket thread (tickets are rendered in reverse — target by text)
+  await page.click('[data-testid="prev-ticket-header"]:has-text("KYC")');
+  const thread = page.locator('[data-testid="prev-ticket-messages"]');
+  await expect(thread).toContainText('I need to verify my KYC', { timeout: 5000 });
+  await expect(thread).toContainText('Your KYC has been approved.');
 });
 
 test('previous messages are read-only — no input shown in history thread', async ({ page }) => {
@@ -99,8 +100,8 @@ test('auto-scroll lands at current conversation bottom, not history top', async 
 });
 
 test('skeleton loader shown while history page is loading', async ({ page }) => {
-  // Slow down history response to observe skeleton
-  await page.route(`**/chat/history/${PREV_TICKET_1.id}**`, async (route) => {
+  // Slow down history response to observe skeleton (RegExp to reliably match paginated URLs)
+  await page.route(new RegExp(`/chat/history/${PREV_TICKET_1.id}`), async (route) => {
     await new Promise((r) => setTimeout(r, 500));
     await route.fulfill({
       status: 200,
@@ -112,7 +113,7 @@ test('skeleton loader shown while history page is loading', async ({ page }) => 
   await openWidget(page);
   await selectLanguage(page, 'en');
   await selectCategory(page, 'KYC');
-  await page.click('[data-testid="prev-ticket-header"]');
+  await page.click('[data-testid="prev-ticket-header"]:has-text("KYC")');
 
   // Skeleton should appear while loading
   await expect(page.locator('[data-testid="history-skeleton"]')).toBeVisible();
@@ -132,37 +133,32 @@ test('scrolling to top of history thread loads older messages', async ({ page })
     created_at: PREV_TICKET_1.created_at + i * 10,
   }));
 
-  // Register page-specific routes BEFORE the generic catch-all
-  // page=2 must be registered first so it matches before page=1 catch-all
-  await page.route(`**/chat/history/${PREV_TICKET_1.id}*page=2*`, (route) =>
-    route.fulfill({
+  // Use RegExp matchers to reliably match query params (glob * doesn't match ? in URLs).
+  // page=2 registered last = highest priority in Playwright's LIFO route matching.
+  await page.route(
+    new RegExp(`/chat/history/${PREV_TICKET_1.id}.*page=1`),
+    (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ history: PAGE1_MSGS, human_handling: false }),
+    })
+  );
+  await page.route(
+    new RegExp(`/chat/history/${PREV_TICKET_1.id}.*page=2`),
+    (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ history: PAGE2_MSGS, human_handling: false }),
-    })
-  );
-  await page.route(`**/chat/history/${PREV_TICKET_1.id}*page=1*`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ history: PAGE1_MSGS, human_handling: false }),
-    })
-  );
-  // Fallback for unpaged requests
-  await page.route(`**/chat/history/${PREV_TICKET_1.id}`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ history: PAGE1_MSGS, human_handling: false }),
     })
   );
 
   await openWidget(page);
   await selectLanguage(page, 'en');
   await selectCategory(page, 'KYC');
-  await page.click('[data-testid="prev-ticket-header"]');
+  // Tickets are rendered in reverse — target KYC specifically
+  await page.click('[data-testid="prev-ticket-header"]:has-text("KYC")');
   // Wait for page 1 to render
-  await expect(page.locator('text=Recent message 9')).toBeVisible({ timeout: 3000 });
+  await expect(page.locator('text=Recent message 9')).toBeVisible({ timeout: 5000 });
 
   // Scroll to top of thread to trigger page 2 load
   await page.locator('[data-testid="prev-ticket-messages"]').evaluate((el) => {

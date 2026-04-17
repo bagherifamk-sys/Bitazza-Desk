@@ -138,6 +138,7 @@ def chat(
     platform: str = "web",
     consecutive_low_confidence: int = 0,
     category: str | None = None,
+    suppress_handoff: bool = False,
 ) -> AgentResponse:
     """
     Process a user message and return an AgentResponse.
@@ -358,6 +359,12 @@ def chat(
 
     response_text, confidence, needs_human, resolved = _parse_gemini_response(raw_text, language)
 
+    # 9a. Farewell override: if the model didn't set resolved=true but the reply
+    # ends with an unambiguous farewell, force it. The model is reliable at choosing
+    # farewell words; the resolved flag is a secondary judgment that can lag behind.
+    if not resolved and not needs_human:
+        resolved = _is_farewell_reply(response_text, language)
+
     # 10. Compliance post-filter
     response_text = post_filter(response_text)
 
@@ -373,21 +380,85 @@ def chat(
             _escalation_status = "Escalated" if platform == "email" else "pending_human"
             update_ticket_status(ticket_id, _escalation_status)
         effective_category = detect_category_from_message(user_message) or category
-        handoff = build_handoff_message(effective_category, language)
-        # Always show the AI's substantive answer before the handoff — whether escalation
-        # was triggered by needs_human=true or low confidence. The model was told to explain
-        # first and then set needs_human, so we must honour that explanation.
-        if response_text and len(response_text.strip()) > 20:
-            combined_text = f"{response_text}\n\n{handoff}"
+        if suppress_handoff:
+            # Workflow mode: the Escalate node handles the handoff message — don't append it here.
+            reply_text = response_text if (response_text and len(response_text.strip()) > 20) else ""
         else:
-            combined_text = handoff
+            handoff = build_handoff_message(effective_category, language)
+            # Always show the AI's substantive answer before the handoff — whether escalation
+            # was triggered by needs_human=true or low confidence. The model was told to explain
+            # first and then set needs_human, so we must honour that explanation.
+            reply_text = f"{response_text}\n\n{handoff}" if (response_text and len(response_text.strip()) > 20) else handoff
         return AgentResponse(
-            text=combined_text,
+            text=reply_text,
             language=language, escalated=True,
             escalation_reason=reason, ticket_id=ticket_id,
         )
 
     return AgentResponse(text=response_text, language=language, resolved=resolved, confidence=confidence)
+
+
+_EN_FAREWELL_PHRASES = {
+    "have a great day",
+    "have a good day",
+    "have a wonderful day",
+    "have a nice day",
+    "have a great one",
+    "have a good one",
+    "take care",
+    "goodbye",
+    "good luck",
+    "all the best",
+    "best of luck",
+    "talk soon",
+    "see you",
+    "you're welcome",
+    "you are welcome",
+    "happy to help",
+    "glad i could help",
+    "glad to help",
+    "hope that helps",
+    "hope this helps",
+}
+
+# Thai farewell markers — checked against the last sentence only to prevent
+# mid-conversation false positives (e.g. "good luck with your resubmission").
+_TH_FAREWELL_LAST_SENTENCE = {
+    "โชคดีนะ",
+    "โชคดีนะคะ",
+    "โชคดีนะครับ",
+    "ขอให้โชคดี",
+    "มีวันที่ดี",
+    "วันดีๆ นะ",
+    "วันดีนะ",
+    "แล้วพบกันใหม่",
+    "ขอให้วันนี้เป็นวันที่ดี",
+}
+
+
+def _is_farewell_reply(text: str, language: str) -> bool:
+    """
+    Return True if the reply text ends with an unambiguous farewell phrase.
+    Used to override resolved=False when the model chose farewell wording
+    but forgot to set the flag.
+    """
+    if not text:
+        return False
+    lower = text.lower().strip()
+    if language != "th":
+        # Check if any EN farewell phrase appears near the end of the reply
+        for phrase in _EN_FAREWELL_PHRASES:
+            if lower.endswith(phrase) or lower.endswith(phrase + "!") or lower.endswith(phrase + "."):
+                return True
+        return False
+    else:
+        # For Thai: only check the last sentence to avoid mid-conversation false positives
+        sentences = [s.strip() for s in re.split(r"[.!?।\n]+", text) if s.strip()]
+        last = sentences[-1] if sentences else text.strip()
+        for phrase in _TH_FAREWELL_LAST_SENTENCE:
+            if phrase in last:
+                return True
+        return False
 
 
 def _parse_gemini_response(raw: str, language: str) -> tuple[str, float, bool, bool]:

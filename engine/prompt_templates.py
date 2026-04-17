@@ -41,7 +41,8 @@ Do NOT set needs_human=true just because the category sounds complex. Always cal
 
 Set resolved=true when EITHER:
 - You are confident the user's issue has been fully addressed and your reply is a natural closing (e.g. "Have a great day!", "You're all set!") with no open questions remaining, OR
-- The user explicitly signals they are done (e.g. "nope", "no thanks", "that's all", "all good", "thanks bye") and your reply is a farewell.
+- The user explicitly signals they are done (e.g. "nope", "no thanks", "that's all", "all good", "thanks", "thanks bye", "ok") and your reply ends with a farewell.
+resolved=true means the CONVERSATION is concluded — not that the underlying account issue is fixed. If you have fully explained the situation, there is nothing more you can do right now, and the user responds with thanks or acknowledgement, set resolved=true. The fact that their KYC is still pending_information or their case is still under review does NOT prevent resolved=true — the conversation itself is done.
 Do NOT set resolved=true if the user still has outstanding questions, if you asked them a follow-up, or if you are waiting on them for more information.
 
 When account data is returned by a tool, use it to give specific, personalized answers.""",
@@ -83,7 +84,8 @@ When account data is returned by a tool, use it to give specific, personalized a
 
 ตั้ง resolved=true เมื่อเข้าเงื่อนไขใดเงื่อนไขหนึ่งต่อไปนี้:
 - คุณมั่นใจว่าปัญหาของผู้ใช้ได้รับการแก้ไขอย่างสมบูรณ์แล้ว และการตอบกลับของคุณเป็นการปิดการสนทนาตามธรรมชาติ (เช่น "โชคดีนะคะ!", "เรียบร้อยแล้วค่ะ!") โดยไม่มีคำถามค้างอยู่ หรือ
-- ผู้ใช้แสดงให้เห็นชัดเจนว่าต้องการจบการสนทนา (เช่น "ไม่ต้องแล้ว", "ขอบคุณ ไม่มีอะไรแล้ว", "โอเคแล้ว") และการตอบกลับของคุณเป็นการกล่าวลา
+- ผู้ใช้แสดงให้เห็นชัดเจนว่าต้องการจบการสนทนา (เช่น "ไม่ต้องแล้ว", "ขอบคุณ", "ขอบคุณค่ะ", "ขอบคุณครับ", "ไม่มีอะไรแล้ว", "โอเคแล้ว") และการตอบกลับของคุณลงท้ายด้วยการกล่าวลา
+resolved=true หมายความว่าการสนทนาสิ้นสุดแล้ว — ไม่ใช่ว่าปัญหาบัญชีได้รับการแก้ไขแล้ว หากคุณได้อธิบายสถานการณ์ครบถ้วน ไม่มีอะไรเพิ่มเติมที่คุณทำได้ตอนนี้ และผู้ใช้ตอบขอบคุณหรือรับทราบแล้ว ให้ตั้ง resolved=true ได้เลย การที่ KYC ยังอยู่ระหว่างรอหรือเคสยังอยู่ระหว่างการตรวจสอบ ไม่ใช่เหตุผลที่จะไม่ตั้ง resolved=true
 อย่าตั้ง resolved=true หากผู้ใช้ยังมีคำถามค้างอยู่ หากคุณถามคำถามติดตาม หรือหากคุณกำลังรอข้อมูลจากพวกเขา
 
 เมื่อมีข้อมูลบัญชี ให้ใช้ตอบแบบเฉพาะเจาะจง""",

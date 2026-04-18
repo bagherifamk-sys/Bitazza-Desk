@@ -412,6 +412,16 @@ CREATE TABLE IF NOT EXISTS ai_drafts (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ai_drafts_ticket_idx ON ai_drafts(ticket_id);
+
+-- Notification channel configs for scheduled daily/weekly reports
+CREATE TABLE IF NOT EXISTS notification_channel_configs (
+  channel     VARCHAR PRIMARY KEY,
+  enabled     BOOLEAN NOT NULL DEFAULT false,
+  config      JSONB    NOT NULL DEFAULT '{}',
+  reports     JSONB    NOT NULL DEFAULT '{"daily": true, "weekly": true}',
+  updated_by  UUID REFERENCES users(id) ON DELETE SET NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `;
 
 (async () => {

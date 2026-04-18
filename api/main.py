@@ -14,6 +14,7 @@ from api.routes.email import router as email_router
 from api.routes.knowledge import router as knowledge_router
 from db.conversation_store import init_db
 from engine.auto_transitions import start_auto_transition_loop
+from engine.report_sender import start_report_scheduler_loop
 
 
 def _activate_gmail_watch() -> None:
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI):
     init_db()
     asyncio.create_task(start_auto_transition_loop())
     asyncio.create_task(_email_safety_net_loop())
+    asyncio.create_task(start_report_scheduler_loop())
     _activate_gmail_watch()
     # Seed the history cursor from the watch() response so the first poll
     # doesn't start from scratch on a fresh server start

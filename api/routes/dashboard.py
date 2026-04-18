@@ -991,3 +991,71 @@ async def ws_conversations(websocket: WebSocket):
                 })
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+# ---------------------------------------------------------------------------
+# Notification channel configs
+# ---------------------------------------------------------------------------
+
+VALID_CHANNELS = {"slack", "teams", "discord", "line", "email", "notion", "confluence"}
+
+
+class NotificationChannelUpsert(BaseModel):
+    enabled: bool
+    config: dict
+    reports: dict  # {"daily": bool, "weekly": bool}
+    report_type: str = "daily"  # for test endpoint only
+
+
+@router.get("/admin/notification-channels")
+def list_notification_channels(user_id: str = Depends(get_user_id)):
+    from engine.report_sender import get_all_notification_channels
+    rows = get_all_notification_channels()
+    # Return all 7 channels, filling in defaults for unconfigured ones
+    result = {}
+    for ch in VALID_CHANNELS:
+        result[ch] = {"channel": ch, "enabled": False, "config": {}, "reports": {"daily": True, "weekly": True}}
+    for row in rows:
+        result[row["channel"]] = {
+            "channel":  row["channel"],
+            "enabled":  row["enabled"],
+            "config":   row["config"],
+            "reports":  row["reports"],
+            "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        }
+    return list(result.values())
+
+
+@router.put("/admin/notification-channels/{channel}")
+def save_notification_channel(
+    channel: str,
+    body: NotificationChannelUpsert,
+    user_id: str = Depends(get_user_id),
+):
+    if channel not in VALID_CHANNELS:
+        raise HTTPException(status_code=400, detail=f"Unknown channel: {channel}")
+    from engine.report_sender import upsert_notification_channel
+    row = upsert_notification_channel(channel, body.enabled, body.config, body.reports, user_id)
+    return {
+        "channel":  row["channel"],
+        "enabled":  row["enabled"],
+        "config":   row["config"],
+        "reports":  row["reports"],
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+@router.post("/admin/notification-channels/{channel}/test")
+async def test_notification_channel(
+    channel: str,
+    body: NotificationChannelUpsert,
+):
+    if channel not in VALID_CHANNELS:
+        raise HTTPException(status_code=400, detail=f"Unknown channel: {channel}")
+    try:
+        from engine.report_sender import send_test_report
+        report_type = body.report_type if body.report_type in ("daily", "weekly") else "daily"
+        await send_test_report(channel, body.config, report_type)
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))

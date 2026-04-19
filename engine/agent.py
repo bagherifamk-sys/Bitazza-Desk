@@ -166,8 +166,9 @@ def chat(
     # 2b. No active workflow for account-specific category → escalate to human specialist.
     # These categories require live account data; without a workflow providing structured
     # guardrails, the safe action is to hand off rather than let free-form AI handle it.
+    # suppress_handoff=True means we're called from inside a workflow node — skip this guard.
     _ACCOUNT_CATEGORIES = {"kyc_verification", "account_restriction", "withdrawal_issue"}
-    if category in _ACCOUNT_CATEGORIES:
+    if category in _ACCOUNT_CATEGORIES and not suppress_handoff:
         ticket_id = get_ticket_id_by_conversation(conversation_id)
         if ticket_id:
             _escalation_status = "Escalated" if platform == "email" else "pending_human"

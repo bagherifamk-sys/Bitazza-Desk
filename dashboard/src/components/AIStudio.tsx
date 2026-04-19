@@ -11,6 +11,7 @@
 import {
   useState, useCallback, useRef, useEffect, type ReactNode,
 } from 'react';
+import { usePerm } from '../PermissionContext';
 import ReactFlow, {
   addEdge,
   Background,
@@ -47,11 +48,15 @@ type NodeKind =
   | 'send_reply' | 'ai_reply' | 'account_lookup' | 'condition'
   | 'escalate' | 'wait_for_reply' | 'wait_for_trigger' | 'resolve_ticket' | 'set_variable';
 
+type StepState = 'pending' | 'running' | 'done' | 'error' | 'paused';
+
 interface NodeData {
   kind: NodeKind;
   label: string;
   config: Record<string, unknown>;
   error?: boolean;
+  testState?: StepState;
+  isStart?: boolean;
 }
 
 interface WorkflowSummary {
@@ -79,7 +84,96 @@ interface TestResult {
   steps: TestStep[];
   completed: boolean;
   error: string | null;
+  conversation?: Array<{ role: 'user' | 'bot' | 'system'; text: string }>;
 }
+
+interface SeedVar { key: string; value: string; }
+
+const DEFAULT_SEED_VARS: SeedVar[] = [
+  { key: 'account.status',     value: 'approved' },
+  { key: 'account.kyc_status', value: 'verified' },
+  { key: 'account.tier',       value: 'Standard' },
+];
+
+// Auto-default store_as per tool — hidden from non-technical users
+const TOOL_STORE_DEFAULTS: Record<string, string> = {
+  profile:      'account',
+  kyc_status:   'kyc',
+  balance:      'balance',
+  transactions: 'transactions',
+  limits:       'limits',
+};
+
+const TOOL_LABELS: Record<string, string> = {
+  profile:      'Profile (name, email, tier)',
+  kyc_status:   'KYC Status',
+  balance:      'Balance',
+  transactions: 'Transactions',
+  limits:       'Limits',
+};
+
+// ── Templates ──────────────────────────────────────────────────────────────────
+
+const TEMPLATES = [
+  {
+    id: 'kyc',
+    name: 'KYC Verification Flow',
+    description: 'Check KYC status and guide the customer or escalate to the KYC team',
+    trigger_channel: 'any',
+    trigger_category: 'kyc_verification',
+    nodes: [
+      { id: 'n1', type: 'account_lookup', position: { x: 220, y: 60  }, data: { label: 'Fetch KYC Status', kind: 'account_lookup', config: { tool: 'kyc_status', store_as: 'kyc' } } },
+      { id: 'n2', type: 'condition',      position: { x: 220, y: 200 }, data: { label: 'KYC approved?',    kind: 'condition',      config: { variable: 'kyc.status', operator: '==', value: 'approved' } } },
+      { id: 'n3', type: 'send_reply',     position: { x: 60,  y: 370 }, data: { label: 'Approved message', kind: 'send_reply',     config: { text: 'Your KYC is fully approved. How can I help you today?' } } },
+      { id: 'n4', type: 'resolve_ticket', position: { x: 60,  y: 520 }, data: { label: 'Resolve',          kind: 'resolve_ticket', config: { send_csat: true } } },
+      { id: 'n5', type: 'escalate',       position: { x: 400, y: 370 }, data: { label: 'Escalate to KYC',  kind: 'escalate',       config: { team: 'kyc', reason: 'KYC not yet approved' } } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3', sourceHandle: 'true' },
+      { id: 'e3', source: 'n2', target: 'n5', sourceHandle: 'false' },
+      { id: 'e4', source: 'n3', target: 'n4' },
+    ],
+  },
+  {
+    id: 'password',
+    name: 'Password / 2FA Reset Flow',
+    description: 'Send reset instructions, wait for reply, then let AI handle and resolve',
+    trigger_channel: 'any',
+    trigger_category: 'password_2fa_reset',
+    nodes: [
+      { id: 'n1', type: 'send_reply',     position: { x: 220, y: 60  }, data: { label: 'Send instructions', kind: 'send_reply',     config: { text: 'To reset your password, please visit the app and tap "Forgot password". I\'ll wait here if you need more help.' } } },
+      { id: 'n2', type: 'wait_for_reply', position: { x: 220, y: 210 }, data: { label: 'Wait for reply',    kind: 'wait_for_reply', config: {} } },
+      { id: 'n3', type: 'ai_reply',       position: { x: 220, y: 360 }, data: { label: 'AI handles reply',  kind: 'ai_reply',       config: {} } },
+      { id: 'n4', type: 'resolve_ticket', position: { x: 220, y: 510 }, data: { label: 'Resolve ticket',    kind: 'resolve_ticket', config: { send_csat: true } } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  },
+  {
+    id: 'restriction',
+    name: 'Account Restriction Flow',
+    description: 'Look up account status and escalate to the right team or let AI assist',
+    trigger_channel: 'any',
+    trigger_category: 'account_restriction',
+    nodes: [
+      { id: 'n1', type: 'account_lookup', position: { x: 220, y: 60  }, data: { label: 'Fetch Account',     kind: 'account_lookup', config: { tool: 'profile', store_as: 'account' } } },
+      { id: 'n2', type: 'condition',      position: { x: 220, y: 210 }, data: { label: 'Account restricted?', kind: 'condition',    config: { variable: 'account.status', operator: '==', value: 'restricted' } } },
+      { id: 'n3', type: 'escalate',       position: { x: 60,  y: 380 }, data: { label: 'Escalate to CS',    kind: 'escalate',       config: { team: 'cs', reason: 'Account restriction requires manual review' } } },
+      { id: 'n4', type: 'ai_reply',       position: { x: 400, y: 380 }, data: { label: 'AI handles reply',  kind: 'ai_reply',       config: {} } },
+      { id: 'n5', type: 'resolve_ticket', position: { x: 400, y: 530 }, data: { label: 'Resolve',           kind: 'resolve_ticket', config: { send_csat: true } } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3', sourceHandle: 'true' },
+      { id: 'e3', source: 'n2', target: 'n4', sourceHandle: 'false' },
+      { id: 'e4', source: 'n4', target: 'n5' },
+    ],
+  },
+];
 
 // ── Node catalog ──────────────────────────────────────────────────────────────
 
@@ -110,7 +204,7 @@ const BUILT_IN_VARS = [
   'language', 'channel', 'category', 'user_id', 'conversation_id', 'user_message',
   'consecutive_low_confidence',
 ];
-const ACCOUNT_VARS = ['account.kyc_status', 'account.balance', 'account.name', 'account.email', 'account.tier'];
+const ACCOUNT_VARS = ['account.status', 'account.balance', 'account.name', 'account.email', 'account.tier', 'account.rejection_reason'];
 const AI_VARS      = ['ai_reply', 'escalated', 'confidence', 'upgraded_category'];
 
 const ALL_VARS = [...BUILT_IN_VARS, ...ACCOUNT_VARS, ...AI_VARS];
@@ -137,33 +231,49 @@ function NodeShell({
   const spec  = NODE_SPECS[data.kind];
   const color = data.error ? '#EF4444' : spec.color;
 
+  const testRing =
+    data.testState === 'running' ? 'ring-2 ring-blue-400 animate-pulse' :
+    data.testState === 'done'    ? 'ring-2 ring-green-400' :
+    data.testState === 'error'   ? 'ring-2 ring-red-500' :
+    data.testState === 'paused'  ? 'ring-2 ring-amber-400' : '';
+
   return (
-    <div
-      className={`bg-surface-2 rounded-lg min-w-[190px] max-w-[240px] shadow-card transition-all ${
-        selected ? 'ring-2 shadow-panel' : 'ring-1 ring-surface-5'
-      } ${data.error ? 'ring-red-500/60' : selected ? 'ring-brand' : ''}`}
-    >
+    <div className="relative">
+      {data.isStart && (
+        <div className="absolute -top-6 left-0 right-0 flex justify-center pointer-events-none">
+          <span className="text-[9px] font-bold bg-green-500/20 text-green-400 border border-green-500/30 rounded-full px-2 py-0.5">
+            ▶ START
+          </span>
+        </div>
+      )}
       <div
-        className="flex items-center gap-2 px-3 py-2 rounded-t-lg border-b border-surface-4"
-        style={{ borderLeft: `3px solid ${color}` }}
+        className={`bg-surface-2 rounded-lg min-w-[190px] max-w-[240px] shadow-card transition-all ${
+          testRing || (selected ? 'ring-2 shadow-panel' : 'ring-1 ring-surface-5')
+        } ${!testRing && data.error ? 'ring-red-500/60' : !testRing && selected ? 'ring-brand' : ''}`}
       >
-        <svg className="w-3.5 h-3.5 shrink-0" style={{ color }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={KIND_ICON[data.kind]} />
-        </svg>
-        <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color }}>
-          {spec.label}
-        </span>
-        {data.error && (
-          <span className="ml-auto text-[10px] font-bold text-red-400">!</span>
-        )}
+        <div
+          className="flex items-center gap-2 px-3 py-2 rounded-t-lg border-b border-surface-4"
+          style={{ borderLeft: `3px solid ${color}` }}
+        >
+          <svg className="w-3.5 h-3.5 shrink-0" style={{ color }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={KIND_ICON[data.kind]} />
+          </svg>
+          <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color }}>
+            {spec.label}
+          </span>
+          {data.error && (
+            <span className="ml-auto text-[10px] font-bold text-red-400">!</span>
+          )}
+        </div>
+        <div className="px-3 py-2 text-xs text-text-secondary">{children}</div>
       </div>
-      <div className="px-3 py-2 text-xs text-text-secondary">{children}</div>
     </div>
   );
 }
 
+// 14px handles — easier to grab than the original 10px
 const hs = (color: string, extra?: object) => ({
-  width: 10, height: 10,
+  width: 14, height: 14,
   background: color,
   border: '2px solid var(--surface-2)',
   ...extra,
@@ -172,11 +282,12 @@ const hs = (color: string, extra?: object) => ({
 function SendReplyNode(p: NodeProps<NodeData>) {
   return (
     <NodeShell {...p}>
-      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.send_reply.color)} />
+      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.send_reply.color)} title="Drag here to connect" />
       <p className="truncate text-text-muted italic">
         {(p.data.config.text as string) || 'Configure message…'}
       </p>
-      <Handle type="source" position={Position.Bottom} style={hs(NODE_SPECS.send_reply.color)} />
+      <Handle type="source" position={Position.Bottom} style={hs(NODE_SPECS.send_reply.color)} title="Drag to connect to next step" />
+      <Handle type="source" id="error" position={Position.Bottom} style={hs('#EF4444', { left: '85%', bottom: -7 })} title="On error → route here" />
     </NodeShell>
   );
 }
@@ -184,9 +295,10 @@ function SendReplyNode(p: NodeProps<NodeData>) {
 function AiReplyNode(p: NodeProps<NodeData>) {
   return (
     <NodeShell {...p}>
-      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.ai_reply.color)} />
+      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.ai_reply.color)} title="Drag here to connect" />
       <p className="text-[11px] text-text-muted">AI handles reply with pre + post filters</p>
-      <Handle type="source" position={Position.Bottom} style={hs(NODE_SPECS.ai_reply.color)} />
+      <Handle type="source" position={Position.Bottom} style={hs(NODE_SPECS.ai_reply.color)} title="Drag to connect to next step" />
+      <Handle type="source" id="error" position={Position.Bottom} style={hs('#EF4444', { left: '85%', bottom: -7 })} title="On error → route here" />
     </NodeShell>
   );
 }
@@ -194,36 +306,58 @@ function AiReplyNode(p: NodeProps<NodeData>) {
 function AccountLookupNode(p: NodeProps<NodeData>) {
   return (
     <NodeShell {...p}>
-      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.account_lookup.color)} />
-      <p className="font-mono text-[11px] text-text-muted">
-        {(p.data.config.tool as string) || 'select tool'}{' '}
-        {p.data.config.store_as ? <span className="text-text-secondary">→ {p.data.config.store_as as string}</span> : null}
+      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.account_lookup.color)} title="Drag here to connect" />
+      <p className="text-[11px] text-text-muted">
+        {TOOL_LABELS[(p.data.config.tool as string)] || 'Select what to look up'}
       </p>
-      <Handle type="source" position={Position.Bottom} style={hs(NODE_SPECS.account_lookup.color)} />
+      {p.data.config.api_url && (
+        <p className="text-[10px] text-indigo-400 truncate mt-0.5">🔗 Custom API</p>
+      )}
+      <Handle type="source" position={Position.Bottom} style={hs(NODE_SPECS.account_lookup.color)} title="Drag to connect to next step" />
+      <Handle type="source" id="error" position={Position.Bottom} style={hs('#EF4444', { left: '85%', bottom: -7 })} title="On error → route here" />
     </NodeShell>
   );
 }
 
 function ConditionNode(p: NodeProps<NodeData>) {
+  const conditions = p.data.config.conditions as Array<{variable: string; operator: string; value: string}> | undefined;
+  const logic = (p.data.config.logic as string) || 'AND';
   return (
     <NodeShell {...p}>
-      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.condition.color)} />
-      <p className="font-mono text-[11px]">
-        <span className="text-text-secondary">{(p.data.config.variable as string) || 'var'}</span>
-        {' '}<span className="text-amber-400">{(p.data.config.operator as string) || '=='}</span>{' '}
-        <span className="text-text-secondary">{(p.data.config.value as string) || 'val'}</span>
-      </p>
-      <div className="flex justify-between mt-1.5 text-[9px] font-medium">
-        <span className="text-green-400">True ↙</span>
-        <span className="text-red-400">False ↘</span>
+      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.condition.color)} title="Drag here to connect" />
+      {conditions && conditions.length > 0 ? (
+        <div className="space-y-0.5">
+          {conditions.slice(0, 2).map((c, i) => (
+            <p key={i} className="font-mono text-[10px]">
+              {i > 0 && <span className="text-amber-400 mr-1">{logic}</span>}
+              <span className="text-text-secondary">{c.variable || 'var'}</span>{' '}
+              <span className="text-amber-400">{c.operator || '=='}</span>{' '}
+              <span className="text-text-secondary">{c.value || 'val'}</span>
+            </p>
+          ))}
+          {conditions.length > 2 && <p className="text-[9px] text-text-muted">+{conditions.length - 2} more…</p>}
+        </div>
+      ) : (
+        <p className="font-mono text-[11px]">
+          <span className="text-text-secondary">{(p.data.config.variable as string) || 'var'}</span>
+          {' '}<span className="text-amber-400">{(p.data.config.operator as string) || '=='}</span>{' '}
+          <span className="text-text-secondary">{(p.data.config.value as string) || 'val'}</span>
+        </p>
+      )}
+      {/* True/False labels above handles — visible outside the node body */}
+      <div className="relative mt-2" style={{ height: 18 }}>
+        <span className="absolute text-[9px] font-bold text-green-400" style={{ left: '18%', bottom: 0 }}>✓ True</span>
+        <span className="absolute text-[9px] font-bold text-red-400"   style={{ left: '62%', bottom: 0 }}>✗ False</span>
       </div>
       <Handle
         type="source" id="true" position={Position.Bottom}
         style={hs('#22C55E', { left: '28%' })}
+        title="True branch — drag to connect"
       />
       <Handle
         type="source" id="false" position={Position.Bottom}
         style={hs('#EF4444', { left: '72%' })}
+        title="False branch — drag to connect"
       />
     </NodeShell>
   );
@@ -276,11 +410,12 @@ function ResolveTicketNode(p: NodeProps<NodeData>) {
 function SetVariableNode(p: NodeProps<NodeData>) {
   return (
     <NodeShell {...p}>
-      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.set_variable.color)} />
+      <Handle type="target" position={Position.Top} style={hs(NODE_SPECS.set_variable.color)} title="Drag here to connect" />
       <p className="font-mono text-[11px] text-text-secondary truncate">
         {(p.data.config.variable_name as string) || 'var'} = {(p.data.config.value as string) || '…'}
       </p>
-      <Handle type="source" position={Position.Bottom} style={hs(NODE_SPECS.set_variable.color)} />
+      <Handle type="source" position={Position.Bottom} style={hs(NODE_SPECS.set_variable.color)} title="Drag to connect to next step" />
+      <Handle type="source" id="error" position={Position.Bottom} style={hs('#EF4444', { left: '85%', bottom: -7 })} title="On error → route here" />
     </NodeShell>
   );
 }
@@ -395,9 +530,70 @@ interface ConfigPanelProps {
   node: Node<NodeData> | null;
   onChange: (id: string, config: Partial<Record<string, unknown>>, label?: string) => void;
   onDelete: (id: string) => void;
+  testStep?: TestStep | null;
 }
 
-function NodeConfigPanel({ node, onChange, onDelete }: ConfigPanelProps) {
+function JsonBlock({ value }: { value: unknown }) {
+  if (value === null || value === undefined) return <span className="text-text-muted italic">null</span>;
+  const str = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+  return (
+    <pre className="text-[10px] font-mono bg-surface-0 border border-surface-5 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-words text-text-secondary max-h-36 overflow-y-auto">
+      {str}
+    </pre>
+  );
+}
+
+function NodeConfigPanel({ node, onChange, onDelete, testStep }: ConfigPanelProps) {
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // ── Test step log view ──────────────────────────────────────────────────────
+  if (testStep) {
+    const spec  = NODE_SPECS[testStep.kind as NodeKind];
+    const color = spec?.color || '#64748B';
+    const stateLabel = testStep.error ? '✕ Error' : testStep.paused ? '⏸ Paused' : '✓ Done';
+    const stateColor = testStep.error ? 'text-red-400' : testStep.paused ? 'text-amber-400' : 'text-green-400';
+
+    return (
+      <div className="w-[280px] shrink-0 border-l border-surface-5 bg-surface-1 flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-surface-5 flex items-center gap-2 shrink-0">
+          <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
+          <span className="text-xs font-semibold text-text-primary">{spec?.label || testStep.kind}</span>
+          <span className={`ml-auto text-[10px] font-bold ${stateColor}`}>{stateLabel}</span>
+        </div>
+        <div className="px-4 py-3 overflow-y-auto flex-1 space-y-3">
+          {testStep.error && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wide text-red-400 mb-1">Error</p>
+              <pre className="text-[10px] font-mono bg-red-500/10 border border-red-500/30 rounded px-2 py-1.5 text-red-300 whitespace-pre-wrap break-words">
+                {testStep.error}
+              </pre>
+            </div>
+          )}
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wide text-text-muted mb-1">Input</p>
+            <JsonBlock value={testStep.input} />
+          </div>
+          {testStep.output !== null && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wide text-text-muted mb-1">Output</p>
+              <JsonBlock value={testStep.output} />
+            </div>
+          )}
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wide text-text-muted mb-1">Variables after</p>
+            <JsonBlock value={testStep.variables_after} />
+          </div>
+          {testStep.paused && testStep.waiting_for && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wide text-amber-400 mb-1">Waiting for</p>
+              <p className="text-xs font-mono text-text-secondary">{testStep.waiting_for}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (!node) {
     return (
       <div className="w-[280px] shrink-0 border-l border-surface-5 bg-surface-1 flex items-center justify-center">
@@ -461,79 +657,172 @@ function NodeConfigPanel({ node, onChange, onDelete }: ConfigPanelProps) {
           </>
         )}
 
-        {/* ai_reply — informational only */}
+        {/* ai_reply — bot selector + security info */}
         {node.data.kind === 'ai_reply' && (
-          <div className="bg-surface-3 border border-surface-5 rounded-md px-3 py-2.5 text-[11px] text-text-muted space-y-1.5">
-            <p className="font-medium text-text-secondary">Security invariants (not configurable)</p>
-            <p>1. <span className="font-mono text-xs text-purple-400">security_filter</span> runs BEFORE generation</p>
-            <p>2. <span className="font-mono text-xs text-purple-400">compliance_filter</span> runs AFTER generation</p>
-            <p className="text-[10px] opacity-70 mt-1">Sets: <span className="font-mono">ai_reply · escalated · confidence · upgraded_category</span></p>
-          </div>
-        )}
-
-        {/* account_lookup */}
-        {node.data.kind === 'account_lookup' && (
           <>
-            <FieldRow label="Tool">
+            <FieldRow label="Which bot handles this?">
               <SelectInput
-                value={cfg.tool || 'profile'}
-                onChange={v => set('tool', v)}
+                value={(cfg.ai_persona as string) || ''}
+                onChange={v => onChange(node.id, { ai_persona: v || undefined })}
                 options={[
-                  { value: 'profile',      label: 'Profile (name, email, tier)' },
-                  { value: 'kyc_status',   label: 'KYC Status' },
-                  { value: 'balance',      label: 'Balance' },
-                  { value: 'transactions', label: 'Transactions' },
-                  { value: 'limits',       label: 'Limits' },
+                  { value: '',      label: 'Auto (by category)' },
+                  { value: 'Ploy',  label: 'Ploy — General Support' },
+                  { value: 'James', label: 'James — Security & 2FA' },
+                  { value: 'Mint',  label: 'Mint — KYC Verification' },
+                  { value: 'Arm',   label: 'Arm — Account & Withdrawals' },
+                  { value: 'Nook',  label: 'Nook — Fraud & Compliance' },
                 ]}
               />
             </FieldRow>
-            <FieldRow label="Store result as">
-              <TextInput
-                value={cfg.store_as || 'account'}
-                onChange={v => set('store_as', v)}
-                placeholder="account"
-                mono
-              />
-            </FieldRow>
-          </>
-        )}
-
-        {/* condition */}
-        {node.data.kind === 'condition' && (
-          <>
-            <VarField
-              label="Variable"
-              value={cfg.variable || ''}
-              onChange={v => set('variable', v)}
-              placeholder="e.g. account.kyc_status"
-              mono
-            />
-            <FieldRow label="Operator">
-              <SelectInput
-                value={cfg.operator || '=='}
-                onChange={v => set('operator', v)}
-                options={[
-                  { value: '==',          label: '== (equals)' },
-                  { value: '!=',          label: '!= (not equals)' },
-                  { value: 'contains',    label: 'contains' },
-                  { value: 'starts_with', label: 'starts_with' },
-                  { value: '>',           label: '> (greater than)' },
-                  { value: '<',           label: '< (less than)' },
-                ]}
-              />
-            </FieldRow>
-            <VarField
-              label="Value"
-              value={cfg.value || ''}
-              onChange={v => set('value', v)}
-              placeholder="e.g. approved"
-            />
-            <div className="bg-surface-3 border border-surface-5 rounded px-2.5 py-2 text-[10px] text-text-muted">
-              Connect the <span className="text-green-400 font-mono">True</span> handle to the left and{' '}
-              <span className="text-red-400 font-mono">False</span> handle to the right.
+            <div className="bg-surface-3 border border-surface-5 rounded-md px-3 py-2.5 text-[11px] text-text-muted space-y-1.5 mt-1">
+              <p className="font-medium text-text-secondary">Security invariants (not configurable)</p>
+              <p>1. <span className="font-mono text-xs text-purple-400">security_filter</span> runs BEFORE generation</p>
+              <p>2. <span className="font-mono text-xs text-purple-400">compliance_filter</span> runs AFTER generation</p>
+              <p className="text-[10px] opacity-70 mt-1">Sets: <span className="font-mono">ai_reply · escalated · confidence · upgraded_category</span></p>
             </div>
           </>
         )}
+
+        {/* account_lookup */}
+        {node.data.kind === 'account_lookup' && (() => {
+          const currentTool = cfg.tool || 'profile';
+          const handleToolChange = (v: string) => {
+            onChange(node.id, { tool: v, store_as: TOOL_STORE_DEFAULTS[v] ?? v });
+          };
+          return (
+            <>
+              <FieldRow label="What to look up">
+                <SelectInput
+                  value={currentTool}
+                  onChange={handleToolChange}
+                  options={[
+                    { value: 'profile',      label: 'Profile (name, email, tier)' },
+                    { value: 'kyc_status',   label: 'KYC Status' },
+                    { value: 'balance',      label: 'Balance' },
+                    { value: 'transactions', label: 'Transactions' },
+                    { value: 'limits',       label: 'Limits' },
+                  ]}
+                />
+              </FieldRow>
+              <div className="border-t border-surface-5 pt-3 mt-1">
+                <button
+                  onClick={() => setShowAdvanced(s => !s)}
+                  className="text-[10px] text-text-muted hover:text-text-secondary w-full text-left flex items-center gap-1"
+                >
+                  <span>{showAdvanced ? '▾' : '▸'}</span> Advanced
+                </button>
+                {showAdvanced && (
+                  <div className="mt-2 space-y-2">
+                    <FieldRow label="Variable name">
+                      <TextInput
+                        value={cfg.store_as || TOOL_STORE_DEFAULTS[currentTool] || 'account'}
+                        onChange={v => set('store_as', v)}
+                        placeholder={TOOL_STORE_DEFAULTS[currentTool] || 'account'}
+                        mono
+                      />
+                    </FieldRow>
+                    <p className="text-[10px] text-text-muted leading-relaxed">
+                      Only change this if you use two lookup nodes in the same workflow — give them different names so they don't overwrite each other.
+                    </p>
+                    <FieldRow label="API Base URL">
+                      <TextInput
+                        value={cfg.api_url || ''}
+                        onChange={v => set('api_url', v)}
+                        placeholder="https://api.example.com/v1"
+                      />
+                    </FieldRow>
+                    <FieldRow label="API Key">
+                      <input
+                        type="password"
+                        value={cfg.api_key || ''}
+                        onChange={e => set('api_key', e.target.value)}
+                        placeholder="Leave blank to use system default"
+                        className="w-full text-xs bg-surface-1 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary placeholder:text-text-muted outline-none focus:ring-brand transition-all"
+                      />
+                    </FieldRow>
+                    <p className="text-[10px] text-text-muted opacity-70">Leave blank to use the system-configured API.</p>
+                  </div>
+                )}
+              </div>
+            </>
+          );
+        })()}
+
+        {/* condition */}
+        {node.data.kind === 'condition' && (() => {
+          // Normalize: if old single-condition format, migrate to conditions array
+          const rawConditions = (node.data.config.conditions as Array<{variable:string;operator:string;value:string}> | undefined);
+          const clauses: Array<{variable:string;operator:string;value:string}> = rawConditions && rawConditions.length > 0
+            ? rawConditions
+            : [{ variable: cfg.variable || '', operator: cfg.operator || '==', value: cfg.value || '' }];
+          const logic = (node.data.config.logic as string) || 'AND';
+
+          const setClause = (i: number, field: string, val: string) => {
+            const updated = clauses.map((c, idx) => idx === i ? { ...c, [field]: val } : c);
+            onChange(node.id, { conditions: updated, logic, variable: undefined, operator: undefined, value: undefined });
+          };
+          const addClause = () => {
+            onChange(node.id, { conditions: [...clauses, { variable: '', operator: '==', value: '' }], logic });
+          };
+          const removeClause = (i: number) => {
+            const updated = clauses.filter((_, idx) => idx !== i);
+            onChange(node.id, { conditions: updated.length ? updated : clauses, logic });
+          };
+          const opOptions = [
+            { value: '==', label: '== equals' }, { value: '!=', label: '!= not equals' },
+            { value: 'contains', label: 'contains' }, { value: 'starts_with', label: 'starts with' },
+            { value: '>', label: '> greater than' }, { value: '<', label: '< less than' },
+          ];
+          return (
+            <>
+              {clauses.length > 1 && (
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-[10px] text-text-muted">Match</span>
+                  {(['AND','OR'] as const).map(l => (
+                    <button key={l} type="button"
+                      onClick={() => onChange(node.id, { conditions: clauses, logic: l })}
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded border transition-colors ${
+                        logic === l
+                          ? 'bg-brand/15 border-brand/40 text-brand'
+                          : 'border-surface-5 text-text-muted hover:text-text-secondary'
+                      }`}>{l}</button>
+                  ))}
+                  <span className="text-[10px] text-text-muted">conditions</span>
+                </div>
+              )}
+              {clauses.map((clause, i) => (
+                <div key={i} className="mb-2 bg-surface-3 rounded p-2 space-y-1.5">
+                  {i > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] font-bold text-amber-400">{logic}</span>
+                      <button type="button" onClick={() => removeClause(i)}
+                        className="text-[10px] text-red-400 hover:text-red-300">✕</button>
+                    </div>
+                  )}
+                  {i === 0 && clauses.length > 1 && (
+                    <div className="flex justify-end">
+                      <button type="button" onClick={() => removeClause(i)}
+                        className="text-[10px] text-red-400 hover:text-red-300">✕</button>
+                    </div>
+                  )}
+                  <VarField label="Variable" value={clause.variable} onChange={v => setClause(i, 'variable', v)} placeholder="e.g. account.status" mono />
+                  <FieldRow label="Operator">
+                    <SelectInput value={clause.operator || '=='} onChange={v => setClause(i, 'operator', v)} options={opOptions} />
+                  </FieldRow>
+                  <VarField label="Value" value={clause.value} onChange={v => setClause(i, 'value', v)} placeholder="e.g. approved" />
+                </div>
+              ))}
+              <button type="button" onClick={addClause}
+                className="w-full text-[10px] text-text-muted hover:text-brand border border-dashed border-surface-5 hover:border-brand/40 rounded py-1.5 transition-colors mb-3">
+                + Add condition
+              </button>
+              <div className="bg-surface-3 border border-surface-5 rounded px-2.5 py-2 text-[10px] text-text-muted">
+                Drag the <span className="text-green-400 font-bold">✓ True</span> handle (left) and{' '}
+                <span className="text-red-400 font-bold">✗ False</span> handle (right) to connect branches.
+              </div>
+            </>
+          );
+        })()}
 
         {/* escalate */}
         {node.data.kind === 'escalate' && (
@@ -633,23 +922,29 @@ interface WorkflowListProps {
   workflows: WorkflowSummary[];
   activeId: string | null;
   loading: boolean;
+  canCreate: boolean;
+  canDelete: boolean;
+  canPublish: boolean;
   onCreate: () => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  onToggleActive: (id: string, currentlyPublished: boolean) => void;
 }
 
-function WorkflowList({ workflows, activeId, loading, onCreate, onSelect, onDelete }: WorkflowListProps) {
+function WorkflowList({ workflows, activeId, loading, canCreate, canDelete, canPublish, onCreate, onSelect, onDelete, onToggleActive }: WorkflowListProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-3 py-3 border-b border-surface-5 flex items-center justify-between shrink-0">
         <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Workflows</span>
-        <button
-          onClick={onCreate}
-          className="text-[10px] bg-brand hover:bg-brand-dim text-white rounded px-2 py-1 transition-colors font-medium"
-        >
-          + New
-        </button>
+        {canCreate && (
+          <button
+            onClick={onCreate}
+            className="text-[10px] bg-brand hover:bg-brand-dim text-white rounded px-2 py-1 transition-colors font-medium"
+          >
+            + New
+          </button>
+        )}
       </div>
 
       {/* List */}
@@ -687,17 +982,36 @@ function WorkflowList({ workflows, activeId, loading, onCreate, onSelect, onDele
                 {wf.published ? 'Live' : 'Draft'}
               </span>
             </div>
-            <p className="text-[10px] text-text-muted mt-0.5">
-              {wf.trigger_channel} · {wf.trigger_category}
-            </p>
-            {/* Delete button (hover) */}
-            <button
-              onClick={e => { e.stopPropagation(); onDelete(wf.id); }}
-              className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-text-muted hover:text-red-400 p-1 rounded hover:bg-red-400/10"
-              title="Delete workflow"
-            >
-              ✕
-            </button>
+            <div className="flex items-center justify-between mt-0.5">
+              <p className="text-[10px] text-text-muted">
+                {wf.trigger_channel} · {wf.trigger_category}
+              </p>
+              {/* Action buttons */}
+              <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+                {canPublish && (
+                  <button
+                    onClick={() => onToggleActive(wf.id, wf.published)}
+                    className={`text-[10px] px-1.5 py-0.5 rounded transition-colors font-medium ${
+                      wf.published
+                        ? 'text-yellow-400 hover:bg-yellow-400/10'
+                        : 'text-green-400 hover:bg-green-400/10'
+                    }`}
+                    title={wf.published ? 'Deactivate' : 'Activate'}
+                  >
+                    {wf.published ? 'Deactivate' : 'Activate'}
+                  </button>
+                )}
+                {canDelete && (
+                  <button
+                    onClick={() => onDelete(wf.id)}
+                    className="text-[10px] text-red-400 hover:bg-red-400/10 px-1.5 py-0.5 rounded transition-colors font-medium"
+                    title="Delete workflow"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         ))}
       </div>
@@ -744,54 +1058,116 @@ function NodePalette({ onAdd }: { onAdd: (kind: NodeKind) => void }) {
 interface TestRunPanelProps {
   workflowId: string | null;
   onClose: () => void;
+  onStepSelect: (step: TestStep | null) => void;
+  onNodeHighlight: (states: Record<string, StepState>) => void;
+  selectedStepId: string | null;
 }
 
-function TestRunPanel({ workflowId, onClose }: TestRunPanelProps) {
+const STEP_DELAY = 650; // ms between steps
+
+function TestRunPanel({ workflowId, onClose, onStepSelect, onNodeHighlight, selectedStepId }: TestRunPanelProps) {
   const [sampleMessage, setSampleMessage] = useState('Hello, I need help with my KYC verification');
-  const [channel,  setChannel]  = useState('widget');
-  const [category, setCategory] = useState('kyc_verification');
-  const [language, setLanguage] = useState('en');
-  const [running,  setRunning]  = useState(false);
-  const [result,   setResult]   = useState<TestResult | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [channel,       setChannel]       = useState('widget');
+  const [category,      setCategory]      = useState('kyc_verification');
+  const [language,      setLanguage]      = useState('en');
+  const [userId,        setUserId]        = useState('');
+  const [seedVars,      setSeedVars]      = useState<SeedVar[]>(DEFAULT_SEED_VARS.map(v => ({ ...v })));
+  const [showJsonEditor,setShowJsonEditor]= useState(false);
+  const [jsonRaw,       setJsonRaw]       = useState('');
+  const [jsonError,     setJsonError]     = useState('');
+  const [fetching,      setFetching]      = useState(false);
+  const [allSteps,      setAllSteps]      = useState<TestStep[]>([]);
+  const [visibleCount,  setVisibleCount]  = useState(0);
+  const [runningIdx,    setRunningIdx]    = useState<number | null>(null);
+  const [finalResult,   setFinalResult]   = useState<TestResult | null>(null);
+  const [centerTab,     setCenterTab]     = useState<'preview' | 'steps'>('preview');
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const clearTimers = () => { timersRef.current.forEach(clearTimeout); timersRef.current = []; };
 
   const run = async () => {
     if (!workflowId) return;
-    setRunning(true);
-    setResult(null);
+
+    let extra_variables: Record<string, unknown> = {};
+    if (showJsonEditor && jsonRaw.trim()) {
+      try { extra_variables = JSON.parse(jsonRaw); setJsonError(''); }
+      catch { setJsonError('Invalid JSON'); return; }
+    } else {
+      seedVars.filter(v => v.key.trim()).forEach(v => { extra_variables[v.key] = v.value; });
+    }
+
+    // Reset
+    clearTimers();
+    setFetching(true);
+    setAllSteps([]);
+    setVisibleCount(0);
+    setRunningIdx(null);
+    setFinalResult(null);
+    onStepSelect(null);
+    onNodeHighlight({});
+
     try {
       const r = await fetch(`${API}/api/studio/flows/${workflowId}/test-run`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ sample_message: sampleMessage, channel, category, language }),
+        body: JSON.stringify({
+          sample_message: sampleMessage, channel, category, language,
+          user_id: userId.trim() || 'test-user',
+          extra_variables,
+        }),
       });
-      const data = await r.json();
-      setResult(data);
-      // Auto-expand error steps
-      const errIds = new Set(
-        (data.steps as TestStep[]).filter(s => s.error).map(s => s.node_id)
-      );
-      setExpanded(errIds);
+      const data: TestResult = await r.json();
+      setAllSteps(data.steps);
+      setFinalResult(data);
+
+      // Animate step reveal
+      const nodeStates: Record<string, StepState> = {};
+      data.steps.forEach((step, i) => {
+        // Show spinner on this node
+        timersRef.current.push(setTimeout(() => {
+          setRunningIdx(i);
+          nodeStates[step.node_id] = 'running';
+          onNodeHighlight({ ...nodeStates });
+        }, i * STEP_DELAY));
+
+        // Resolve to done/error/paused
+        timersRef.current.push(setTimeout(() => {
+          const s: StepState = step.error ? 'error' : step.paused ? 'paused' : 'done';
+          nodeStates[step.node_id] = s;
+          setVisibleCount(i + 1);
+          setRunningIdx(null);
+          onNodeHighlight({ ...nodeStates });
+        }, i * STEP_DELAY + STEP_DELAY - 150));
+      });
+
     } catch (e) {
-      setResult({ steps: [], completed: false, error: String(e) });
+      setFinalResult({ steps: [], completed: false, error: String(e) });
     } finally {
-      setRunning(false);
+      setFetching(false);
     }
   };
 
-  const toggle = (id: string) => setExpanded(prev => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
+  const isAnimating = runningIdx !== null || (fetching);
+  const showSummary = finalResult && visibleCount >= allSteps.length && !isAnimating;
 
   return (
     <div className="absolute inset-x-0 bottom-0 bg-surface-1 border-t border-surface-5 flex flex-col shadow-modal"
-      style={{ height: '42%', zIndex: 20 }}
+      style={{ height: '44%', zIndex: 20 }}
     >
-      {/* Panel header */}
+      {/* Header */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-surface-5 shrink-0">
-        <span className="text-xs font-semibold text-text-primary">Test Run</span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-semibold text-text-primary">Test Run</span>
+          {showSummary && (
+            <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+              finalResult!.error ? 'bg-red-500/15 text-red-400' :
+              finalResult!.completed ? 'bg-green-500/15 text-green-400' :
+              'bg-amber-500/15 text-amber-400'
+            }`}>
+              {finalResult!.error ? '✕ Error' : finalResult!.completed ? '✓ Completed' : '⏸ Paused'}
+            </span>
+          )}
+        </div>
         <button onClick={onClose} className="text-text-muted hover:text-text-primary transition-colors">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -800,144 +1176,224 @@ function TestRunPanel({ workflowId, onClose }: TestRunPanelProps) {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
+
         {/* Left: inputs */}
-        <div className="w-[300px] shrink-0 border-r border-surface-5 px-4 py-3 space-y-3 overflow-y-auto">
+        <div className="w-[260px] shrink-0 border-r border-surface-5 px-3 py-3 space-y-2.5 overflow-y-auto">
           <div>
-            <FieldLabel>Sample message</FieldLabel>
-            <textarea
-              value={sampleMessage}
-              onChange={e => setSampleMessage(e.target.value)}
-              rows={3}
-              className="w-full text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary outline-none focus:ring-brand resize-none"
-            />
+            <FieldLabel>Message</FieldLabel>
+            <textarea value={sampleMessage} onChange={e => setSampleMessage(e.target.value)} rows={3}
+              className="w-full text-xs bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary outline-none focus:ring-brand resize-none" />
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <FieldLabel>Channel</FieldLabel>
+          <div className="grid grid-cols-2 gap-1.5">
+            <div><FieldLabel>Channel</FieldLabel>
               <SelectInput value={channel} onChange={setChannel} options={[
-                { value: 'widget', label: 'Widget' },
-                { value: 'email',  label: 'Email' },
+                { value: 'widget', label: 'Widget' }, { value: 'email', label: 'Email' },
               ]} />
             </div>
-            <div>
-              <FieldLabel>Language</FieldLabel>
+            <div><FieldLabel>Language</FieldLabel>
               <SelectInput value={language} onChange={setLanguage} options={[
-                { value: 'en', label: 'EN' },
-                { value: 'th', label: 'TH' },
+                { value: 'en', label: 'EN' }, { value: 'th', label: 'TH' },
               ]} />
             </div>
           </div>
-          <div>
-            <FieldLabel>Category</FieldLabel>
+          <div><FieldLabel>Category</FieldLabel>
             <SelectInput value={category} onChange={setCategory} options={[
-              { value: 'any',                label: 'Any' },
-              { value: 'kyc_verification',   label: 'KYC Verification' },
-              { value: 'account_restriction',label: 'Account Restriction' },
-              { value: 'password_2fa_reset', label: '2FA / Password Reset' },
-              { value: 'withdrawal_issue',   label: 'Withdrawal Issue' },
-              { value: 'fraud_security',     label: 'Fraud / Security' },
-              { value: 'other',              label: 'Other' },
+              { value: 'any', label: 'Any' },
+              { value: 'kyc_verification', label: 'KYC' },
+              { value: 'account_restriction', label: 'Account' },
+              { value: 'password_2fa_reset', label: '2FA / Password' },
+              { value: 'withdrawal_issue', label: 'Withdrawal' },
+              { value: 'fraud_security', label: 'Fraud' },
+              { value: 'other', label: 'Other' },
             ]} />
           </div>
-          <button
-            onClick={run}
-            disabled={running || !workflowId}
-            className="w-full text-xs bg-brand hover:bg-brand-dim text-white rounded px-3 py-2 transition-colors disabled:opacity-40 flex items-center justify-center gap-1.5"
-          >
-            {running ? <><Spinner size="xs" /> Running…</> : '▶  Run Test'}
+          <div><FieldLabel>User ID</FieldLabel>
+            <TextInput value={userId} onChange={setUserId} placeholder="USR-000009 or blank" mono />
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <FieldLabel>Test variables</FieldLabel>
+              <button type="button" onClick={() => setShowJsonEditor(v => !v)}
+                className="text-[10px] text-text-muted hover:text-text-secondary transition-colors">
+                {showJsonEditor ? 'Simple ↑' : 'Edit JSON ↓'}
+              </button>
+            </div>
+            {showJsonEditor ? (
+              <>
+                <textarea value={jsonRaw} onChange={e => { setJsonRaw(e.target.value); setJsonError(''); }}
+                  rows={3} placeholder='{"account.status":"approved"}'
+                  className="w-full text-xs font-mono bg-surface-2 ring-1 ring-surface-5 rounded px-2.5 py-1.5 text-text-primary outline-none focus:ring-brand resize-none placeholder:text-text-muted" />
+                {jsonError && <p className="text-[10px] text-red-400 mt-0.5">{jsonError}</p>}
+              </>
+            ) : (
+              <div className="space-y-1">
+                {seedVars.map((sv, i) => (
+                  <div key={i} className="flex gap-1 items-center">
+                    <input value={sv.key} onChange={e => setSeedVars(vs => vs.map((v, j) => j === i ? { ...v, key: e.target.value } : v))}
+                      placeholder="variable.path"
+                      className="flex-1 min-w-0 text-[10px] font-mono bg-surface-2 ring-1 ring-surface-5 rounded px-2 py-1 text-text-primary outline-none focus:ring-brand" />
+                    <span className="text-text-muted text-[10px] shrink-0">=</span>
+                    <input value={sv.value} onChange={e => setSeedVars(vs => vs.map((v, j) => j === i ? { ...v, value: e.target.value } : v))}
+                      placeholder="value"
+                      className="flex-1 min-w-0 text-[10px] bg-surface-2 ring-1 ring-surface-5 rounded px-2 py-1 text-text-primary outline-none focus:ring-brand" />
+                    <button type="button" onClick={() => setSeedVars(vs => vs.filter((_, j) => j !== i))}
+                      className="text-text-muted hover:text-red-400 text-xs shrink-0">✕</button>
+                  </div>
+                ))}
+                <button type="button" onClick={() => setSeedVars(vs => [...vs, { key: '', value: '' }])}
+                  className="text-[10px] text-text-muted hover:text-brand w-full text-left transition-colors">
+                  + Add variable
+                </button>
+              </div>
+            )}
+          </div>
+          <button onClick={run} disabled={isAnimating || fetching || !workflowId}
+            className="w-full text-xs bg-brand hover:bg-brand-dim text-white rounded px-3 py-2 transition-colors disabled:opacity-40 flex items-center justify-center gap-1.5">
+            {fetching ? <><Spinner size="xs" /> Fetching…</> :
+             isAnimating ? <><Spinner size="xs" /> Running…</> : '▶  Run Test'}
           </button>
         </div>
 
-        {/* Right: results */}
-        <div className="flex-1 overflow-y-auto px-4 py-3">
-          {!result && !running && (
+        {/* Center: preview or step trace */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Tab toggle */}
+          <div className="flex items-center border-b border-surface-5 px-4 shrink-0">
+            {(['preview', 'steps'] as const).map(tab => (
+              <button key={tab} onClick={() => setCenterTab(tab)}
+                className={`text-[10px] font-semibold px-3 py-2 border-b-2 transition-colors capitalize ${
+                  centerTab === tab ? 'border-brand text-brand' : 'border-transparent text-text-muted hover:text-text-secondary'
+                }`}>{tab === 'preview' ? 'Preview' : 'Steps (debug)'}</button>
+            ))}
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-3">
+          {!fetching && allSteps.length === 0 && !finalResult && (
             <div className="flex items-center justify-center h-full text-text-muted text-xs">
               Configure inputs and click Run Test
             </div>
           )}
-          {result && (
-            <>
-              {/* Summary badge */}
-              <div className={`inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full mb-3 ${
-                result.error
-                  ? 'bg-red-500/15 text-red-400'
-                  : result.completed
-                  ? 'bg-green-500/15 text-green-400'
-                  : 'bg-amber-500/15 text-amber-400'
-              }`}>
-                {result.error ? '✕ Error' : result.completed ? '✓ Completed' : '⏸ Paused'}
-                {result.error && <span className="opacity-70"> — {result.error}</span>}
-              </div>
 
-              {/* Steps */}
-              <div className="space-y-2">
-                {result.steps.map((step, i) => {
-                  const spec  = NODE_SPECS[step.kind as NodeKind];
-                  const color = spec?.color || '#64748B';
-                  const isExp = expanded.has(step.node_id);
-                  return (
-                    <div
-                      key={step.node_id + i}
-                      className={`border rounded-md overflow-hidden ${
-                        step.error ? 'border-red-500/40' : step.paused ? 'border-amber-500/40' : 'border-surface-5'
-                      }`}
-                    >
-                      {/* Step header */}
-                      <button
-                        className="w-full flex items-center gap-2 px-3 py-2 bg-surface-2 hover:bg-surface-3 transition-colors text-left"
-                        onClick={() => toggle(step.node_id)}
-                      >
-                        <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
-                          style={{ background: color }}>
-                          {i + 1}
-                        </div>
-                        <span className="text-xs text-text-secondary font-medium" style={{ color }}>
-                          {spec?.label || step.kind}
-                        </span>
-                        {step.error  && <span className="ml-auto text-[10px] text-red-400 font-medium">Error</span>}
-                        {step.paused && <span className="ml-auto text-[10px] text-amber-400 font-medium">Paused — {step.waiting_for}</span>}
-                        {!step.error && !step.paused && step.output && (
-                          <span className="ml-auto text-[10px] text-text-muted">
-                            {Object.keys(step.output).join(', ') || '—'}
-                          </span>
-                        )}
-                        <svg className={`w-3 h-3 text-text-muted transition-transform ${isExp ? 'rotate-180' : ''}`}
-                          fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                      </button>
-
-                      {/* Expanded detail */}
-                      {isExp && (
-                        <div className="px-3 pb-3 pt-2 bg-surface-1 space-y-2 font-mono text-[10px] text-text-muted">
-                          {step.error && (
-                            <div className="bg-red-500/10 border border-red-500/30 rounded px-2 py-1.5 text-red-400">
-                              {step.error}
-                            </div>
-                          )}
-                          {step.output && Object.keys(step.output).length > 0 && (
-                            <div>
-                              <p className="text-[9px] uppercase tracking-wider mb-1 text-text-muted">Output</p>
-                              <pre className="whitespace-pre-wrap break-all text-text-secondary bg-surface-2 rounded px-2 py-1.5 overflow-auto max-h-24">
-                                {JSON.stringify(step.output, null, 2)}
-                              </pre>
-                            </div>
-                          )}
-                          <div>
-                            <p className="text-[9px] uppercase tracking-wider mb-1 text-text-muted">Variables after</p>
-                            <pre className="whitespace-pre-wrap break-all text-text-secondary bg-surface-2 rounded px-2 py-1.5 overflow-auto max-h-24">
-                              {JSON.stringify(step.variables_after, null, 2)}
-                            </pre>
-                          </div>
-                        </div>
-                      )}
+          {/* Preview tab: conversation bubbles */}
+          {centerTab === 'preview' && finalResult?.conversation && (
+            <div className="space-y-2">
+              {finalResult.conversation.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : msg.role === 'system' ? 'justify-center' : 'justify-start'}`}>
+                  {msg.role === 'system' ? (
+                    <span className="text-[10px] text-text-muted italic px-3 py-1 bg-surface-3 rounded-full border border-surface-5">{msg.text}</span>
+                  ) : (
+                    <div className={`max-w-[75%] px-3 py-2 rounded-xl text-xs ${
+                      msg.role === 'user'
+                        ? 'bg-brand/20 text-text-primary rounded-br-sm'
+                        : 'bg-surface-3 text-text-secondary rounded-bl-sm border border-surface-5'
+                    }`}>
+                      {msg.text}
                     </div>
-                  );
-                })}
-              </div>
-            </>
+                  )}
+                </div>
+              ))}
+            </div>
           )}
-        </div>
+
+          {centerTab === 'preview' && finalResult && !finalResult.conversation?.length && (
+            <div className="flex items-center justify-center h-full text-text-muted text-xs">
+              No messages sent in this run
+            </div>
+          )}
+
+          {/* Step list (debug tab) */}
+          {centerTab === 'steps' && <div className="space-y-2 pb-2">
+            {allSteps.slice(0, Math.max(visibleCount, runningIdx !== null ? runningIdx + 1 : 0)).map((step, i) => {
+              const spec    = NODE_SPECS[step.kind as NodeKind];
+              const color   = spec?.color || '#64748B';
+              const isRun   = runningIdx === i;
+              const isDone  = i < visibleCount;
+              const hasErr  = !!step.error;
+              const isPaused= step.paused;
+              const isSel   = selectedStepId === step.node_id;
+
+              let statusIcon: ReactNode;
+              if (isRun) {
+                statusIcon = <Spinner size="xs" />;
+              } else if (!isDone) {
+                statusIcon = null;
+              } else if (hasErr) {
+                statusIcon = (
+                  <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                );
+              } else if (isPaused) {
+                statusIcon = (
+                  <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6" />
+                  </svg>
+                );
+              } else {
+                statusIcon = (
+                  <svg className="w-4 h-4 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                );
+              }
+
+              return (
+                <button
+                  key={step.node_id + i}
+                  onClick={() => isDone ? onStepSelect(isSel ? null : step) : undefined}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all text-left ${
+                    isSel
+                      ? 'border-brand bg-brand/5 ring-1 ring-brand/30'
+                      : isRun
+                      ? 'border-surface-4 bg-surface-3 animate-pulse'
+                      : isDone
+                      ? hasErr
+                        ? 'border-red-500/30 bg-red-500/5 hover:bg-red-500/10 cursor-pointer'
+                        : 'border-surface-5 bg-surface-2 hover:bg-surface-3 cursor-pointer'
+                      : 'border-surface-5/40 bg-surface-2/40 opacity-40 cursor-default'
+                  }`}
+                >
+                  {/* Step number bubble */}
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
+                    style={{ background: isDone || isRun ? color : '#374151' }}>
+                    {i + 1}
+                  </div>
+
+                  {/* Label */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium" style={{ color: isDone || isRun ? color : undefined }}>
+                      {spec?.label || step.kind}
+                    </p>
+                    {isDone && !isRun && (
+                      <p className="text-[10px] text-text-muted truncate mt-0.5">
+                        {hasErr ? step.error?.slice(0, 60) + '…' :
+                         isPaused ? `Paused — ${step.waiting_for}` :
+                         step.output ? Object.keys(step.output).join(', ') : ''}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Status icon */}
+                  <div className="shrink-0">{statusIcon}</div>
+
+                  {/* Click hint */}
+                  {isDone && !isRun && (
+                    <svg className="w-3.5 h-3.5 text-text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </div>}
+
+          {/* Fatal error */}
+          {centerTab === 'steps' && showSummary && finalResult!.error && (
+            <div className="mt-3 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 text-xs text-red-400 font-mono">
+              {finalResult!.error}
+            </div>
+          )}
+          </div>{/* end flex-1 overflow-y-auto */}
+        </div>{/* end center flex-1 flex flex-col */}
       </div>
     </div>
   );
@@ -955,6 +1411,11 @@ interface ToolbarProps {
   published: boolean;
   saving: boolean;
   publishing: boolean;
+  hasErrors: boolean;
+  catchAll: boolean;
+  canEdit: boolean;
+  canTest: boolean;
+  canPublish: boolean;
   onSave: () => void;
   onPublish: () => void;
   onUnpublish: () => void;
@@ -978,7 +1439,7 @@ function Toolbar(p: ToolbarProps) {
 
       {/* Trigger channel */}
       <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-text-muted uppercase tracking-wide">Channel</span>
+        <span className="text-[10px] text-text-muted uppercase tracking-wide" title="This workflow fires when a conversation matches this channel">Channel ⓘ</span>
         <select
           value={p.triggerChannel}
           onChange={e => p.onChannelChange(e.target.value)}
@@ -992,21 +1453,25 @@ function Toolbar(p: ToolbarProps) {
 
       {/* Trigger category */}
       <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-text-muted uppercase tracking-wide">Category</span>
+        <span className="text-[10px] text-text-muted uppercase tracking-wide" title="This workflow fires when a conversation matches this category">Category ⓘ</span>
         <select
           value={p.triggerCategory}
           onChange={e => p.onCategoryChange(e.target.value)}
           className="text-xs bg-surface-2 border border-surface-5 rounded px-2 py-1 text-text-primary outline-none focus:border-brand transition-colors"
         >
           <option value="any">Any</option>
-          <option value="kyc_verification">KYC</option>
+          <option value="kyc_verification">KYC Verification</option>
           <option value="account_restriction">Account Restriction</option>
-          <option value="password_2fa_reset">2FA / Password</option>
-          <option value="withdrawal_issue">Withdrawal</option>
+          <option value="password_2fa_reset">2FA / Password Reset</option>
+          <option value="withdrawal_issue">Withdrawal Issue</option>
           <option value="fraud_security">Fraud / Security</option>
           <option value="other">Other</option>
         </select>
       </div>
+
+      {p.catchAll && (
+        <span className="text-[10px] text-amber-400" title="This workflow will intercept ALL conversations">⚠ Catch-all trigger</span>
+      )}
 
       {/* Status message */}
       {p.statusMsg && (
@@ -1019,24 +1484,28 @@ function Toolbar(p: ToolbarProps) {
       )}
 
       <div className="ml-auto flex items-center gap-2">
-        <button
-          onClick={p.onTestRun}
-          className="text-xs bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary border border-surface-5 rounded px-3 py-1.5 transition-colors flex items-center gap-1.5"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          Test
-        </button>
-        <button
-          onClick={p.onSave}
-          disabled={p.saving}
-          className="text-xs bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary border border-surface-5 rounded px-3 py-1.5 transition-colors disabled:opacity-40"
-        >
-          {p.saving ? 'Saving…' : 'Save'}
-        </button>
-        {p.published ? (
+        {p.canTest && (
+          <button
+            onClick={p.onTestRun}
+            className="text-xs bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary border border-surface-5 rounded px-3 py-1.5 transition-colors flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Test
+          </button>
+        )}
+        {p.canEdit && (
+          <button
+            onClick={p.onSave}
+            disabled={p.saving}
+            className="text-xs bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary border border-surface-5 rounded px-3 py-1.5 transition-colors disabled:opacity-40"
+          >
+            {p.saving ? 'Saving…' : 'Save'}
+          </button>
+        )}
+        {p.canPublish && (p.published ? (
           <button
             onClick={p.onUnpublish}
             disabled={p.publishing}
@@ -1047,12 +1516,13 @@ function Toolbar(p: ToolbarProps) {
         ) : (
           <button
             onClick={p.onPublish}
-            disabled={p.publishing}
+            disabled={p.publishing || p.hasErrors}
+            title={p.hasErrors ? 'Fix highlighted nodes before publishing' : undefined}
             className="text-xs bg-brand hover:bg-brand-dim text-white rounded px-3 py-1.5 transition-colors disabled:opacity-40"
           >
             {p.publishing ? 'Publishing…' : 'Publish'}
           </button>
-        )}
+        ))}
       </div>
     </div>
   );
@@ -1061,6 +1531,12 @@ function Toolbar(p: ToolbarProps) {
 // ── Main AIStudio ─────────────────────────────────────────────────────────────
 
 export default function AIStudio() {
+  const canCreate  = usePerm('studio.create');
+  const canEdit    = usePerm('studio.edit');
+  const canDelete  = usePerm('studio.delete');
+  const canTest    = usePerm('studio.test');
+  const canPublish = usePerm('studio.publish');
+
   // ── Workflow list ──
   const [workflows, setWorkflows]     = useState<WorkflowSummary[]>([]);
   const [listLoading, setListLoading] = useState(false);
@@ -1084,6 +1560,12 @@ export default function AIStudio() {
   const [statusKind, setStatusKind] = useState<'idle' | 'ok' | 'error'>('idle');
   const [showTest,   setShowTest]   = useState(false);
   const [errorIds,   setErrorIds]   = useState<Set<string>>(new Set());
+  const [conflictWarn, setConflictWarn] = useState('');
+  const [showHint,   setShowHint]   = useState(() => !localStorage.getItem('studio_onboarded'));
+
+  // ── Test run state ──
+  const [selectedTestStep, setSelectedTestStep] = useState<TestStep | null>(null);
+  const [testNodeStates,   setTestNodeStates]   = useState<Record<string, StepState>>({});
 
   const idRef = useRef<string | null>(null);
 
@@ -1161,6 +1643,25 @@ export default function AIStudio() {
     await loadWorkflow(id);
   };
 
+  // ── Create workflow from template ──
+  const createWorkflowFromTemplate = async (tpl: typeof TEMPLATES[number]) => {
+    const r = await fetch(`${API}/api/studio/flows`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        name: tpl.name,
+        trigger_channel: tpl.trigger_channel,
+        trigger_category: tpl.trigger_category,
+        nodes_json: tpl.nodes,
+        edges_json: tpl.edges,
+      }),
+    });
+    if (!r.ok) return;
+    const { id } = await r.json();
+    await loadList();
+    await loadWorkflow(id);
+  };
+
   // ── Delete workflow ──
   const deleteWorkflow = async (id: string) => {
     if (!confirm('Delete this workflow? This cannot be undone.')) return;
@@ -1173,6 +1674,28 @@ export default function AIStudio() {
       setActiveId(null);
       setNodes([]);
       setEdges([]);
+    }
+    await loadList();
+  };
+
+  // ── Activate / Deactivate workflow from list ──
+  const toggleWorkflowActive = async (id: string, currentlyPublished: boolean) => {
+    const endpoint = currentlyPublished ? 'unpublish' : 'publish';
+    const r = await fetch(`${API}/api/studio/flows/${id}/${endpoint}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+    const body = await r.json();
+    if (!r.ok) {
+      alert(body.error || `Failed to ${currentlyPublished ? 'deactivate' : 'activate'} workflow.`);
+      return;
+    }
+    // Sync canvas state if this is the currently open workflow
+    if (idRef.current === id) {
+      setPublished(!currentlyPublished);
+      setStatusMsg(currentlyPublished ? 'Deactivated' : 'Activated');
+      setStatusKind('ok');
+      setTimeout(() => setStatusMsg(''), 2500);
     }
     await loadList();
   };
@@ -1249,6 +1772,7 @@ export default function AIStudio() {
       }
       setPublished(true);
       setStatusMsg('Published!'); setStatusKind('ok');
+      if (body.warnings?.length) setConflictWarn(body.warnings[0]);
       await loadList();
       setTimeout(() => setStatusMsg(''), 3000);
     } finally {
@@ -1279,6 +1803,7 @@ export default function AIStudio() {
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node<NodeData>) => {
     setSelectedNode(node);
+    setSelectedTestStep(null);  // canvas click → show config, not test log
   }, []);
 
   const onPaneClick = useCallback(() => setSelectedNode(null), []);
@@ -1290,11 +1815,13 @@ export default function AIStudio() {
       return;
     }
     const id = `${kind}-${Date.now()}`;
+    const defaultConfig: Record<string, unknown> =
+      kind === 'account_lookup' ? { tool: 'profile', store_as: 'account' } : {};
     setNodes(ns => [...ns, {
       id,
       type: kind,
       position: { x: 200 + Math.random() * 250, y: 120 + Math.random() * 200 },
-      data: { kind, label: NODE_SPECS[kind].label, config: {} },
+      data: { kind, label: NODE_SPECS[kind].label, config: defaultConfig },
     }]);
   };
 
@@ -1331,6 +1858,46 @@ export default function AIStudio() {
 
   const noWorkflowLoaded = !idRef.current && !activeId;
 
+  // Compute which node has no incoming edge → that's the start node
+  const startNodeId = (() => {
+    const targets = new Set(edges.map(e => e.target));
+    const roots = nodes.filter(n => !targets.has(n.id));
+    return roots.length === 1 ? roots[0].id : null;
+  })();
+
+  const multipleRoots = (() => {
+    const targets = new Set(edges.map(e => e.target));
+    return nodes.filter(n => !targets.has(n.id)).length > 1;
+  })();
+
+  // Real-time client-side validation
+  const nodeErrors = (() => {
+    const errs = new Set<string>();
+    const connectedSources = new Set(edges.map(e => e.source));
+    const terminals = new Set(['escalate', 'resolve_ticket', 'wait_for_reply', 'wait_for_trigger']);
+    for (const n of nodes) {
+      const k = n.data.kind;
+      const c = n.data.config;
+      const conditions = c.conditions as Array<{variable:string;value:string}> | undefined;
+      if (k === 'send_reply' && !c.text) errs.add(n.id);
+      if (k === 'account_lookup' && !c.tool) errs.add(n.id);
+      if (k === 'condition') {
+        const hasCompound = conditions && conditions.length > 0 && conditions.some(cl => cl.variable);
+        const hasSingle = c.variable;
+        if (!hasCompound && !hasSingle) errs.add(n.id);
+        // must have both true/false outgoing edges
+        const out = edges.filter(e => e.source === n.id);
+        if (!out.some(e => e.sourceHandle === 'true') || !out.some(e => e.sourceHandle === 'false')) errs.add(n.id);
+      }
+      if (k === 'set_variable' && !c.variable_name) errs.add(n.id);
+      // Non-terminal nodes must have an outgoing edge
+      if (!terminals.has(k) && !connectedSources.has(n.id)) errs.add(n.id);
+    }
+    return errs;
+  })();
+
+  const catchAllTrigger = channel === 'any' && category === 'any';
+
   return (
     <div className="flex flex-1 overflow-hidden bg-surface-0">
 
@@ -1341,12 +1908,16 @@ export default function AIStudio() {
             workflows={workflows}
             activeId={activeId}
             loading={listLoading}
+            canCreate={canCreate}
+            canDelete={canDelete}
+            canPublish={canPublish}
             onCreate={createWorkflow}
             onSelect={loadWorkflow}
             onDelete={deleteWorkflow}
+            onToggleActive={toggleWorkflowActive}
           />
         </div>
-        <NodePalette onAdd={addNode} />
+        {canEdit && <NodePalette onAdd={addNode} />}
       </div>
 
       {/* ── Center: canvas ── */}
@@ -1364,6 +1935,11 @@ export default function AIStudio() {
             published={published}
             saving={saving}
             publishing={publishing}
+            hasErrors={nodeErrors.size > 0}
+            catchAll={catchAllTrigger}
+            canEdit={canEdit}
+            canTest={canTest}
+            canPublish={canPublish}
             onSave={saveDraft}
             onPublish={publish}
             onUnpublish={unpublish}
@@ -1373,29 +1949,78 @@ export default function AIStudio() {
           />
         )}
 
-        {/* Empty state when no workflow selected */}
+        {/* Empty state — template picker */}
         {noWorkflowLoaded ? (
-          <div className="flex-1 flex items-center justify-center flex-col gap-4 text-center px-8">
-            <svg className="w-14 h-14 text-text-muted opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-            </svg>
-            <div>
-              <p className="text-sm text-text-secondary font-medium">No workflow selected</p>
-              <p className="text-xs text-text-muted mt-1">Select an existing workflow from the left, or create a new one</p>
+          <div className="flex-1 flex items-center justify-center flex-col gap-6 px-8 py-10 overflow-y-auto">
+            <div className="text-center">
+              <p className="text-base font-semibold text-text-primary">{canCreate ? 'Start with a template' : 'Bot Studio'}</p>
+              <p className="text-xs text-text-muted mt-1">{canCreate ? 'Pick a pre-built flow or start from scratch' : 'Select a workflow from the list to view it.'}</p>
             </div>
-            <button
-              onClick={createWorkflow}
-              className="text-sm bg-brand hover:bg-brand-dim text-white rounded-md px-4 py-2 transition-colors"
-            >
-              + Create Workflow
-            </button>
+            {canCreate && <div className="grid grid-cols-3 gap-4 w-full max-w-2xl">
+              {TEMPLATES.map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => createWorkflowFromTemplate(t)}
+                  className="text-left bg-surface-2 hover:bg-surface-3 border border-surface-5 hover:border-brand/40 rounded-xl p-4 transition-all group"
+                >
+                  <p className="text-xs font-semibold text-text-primary group-hover:text-brand transition-colors">{t.name}</p>
+                  <p className="text-[10px] text-text-muted mt-1 leading-relaxed">{t.description}</p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <span className="text-[9px] font-bold bg-surface-4 text-text-muted rounded-full px-2 py-0.5">
+                      {t.nodes.length} steps
+                    </span>
+                    <span className="text-[9px] text-text-muted">{t.trigger_category.replace(/_/g, ' ')}</span>
+                  </div>
+                </button>
+              ))}
+            </div>}
+            {canCreate && (
+              <button
+                onClick={createWorkflow}
+                className="text-xs text-text-muted hover:text-text-secondary transition-colors underline-offset-2 hover:underline"
+              >
+                Start from scratch →
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex-1 relative">
+            {/* Onboarding hint — shown once */}
+            {showHint && nodes.length === 0 && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-surface-3 border border-brand/30 rounded-xl px-5 py-3 shadow-modal flex items-center gap-3 max-w-sm">
+                <svg className="w-5 h-5 text-brand shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-xs text-text-secondary flex-1">
+                  Add steps from the left panel. Drag from the <span className="text-brand font-semibold">colored dot</span> at the bottom of a node to connect it.
+                </p>
+                <button onClick={() => { setShowHint(false); localStorage.setItem('studio_onboarded', '1'); }}
+                  className="text-text-muted hover:text-text-primary text-lg leading-none shrink-0">✕</button>
+              </div>
+            )}
+
+            {multipleRoots && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2 flex items-center gap-2 text-xs text-amber-400">
+                ⚠ Multiple entry points — only one node can be the start of a workflow
+              </div>
+            )}
+
+            {conflictWarn && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2 flex items-center gap-2 text-xs text-amber-400 max-w-md">
+                ⚠ {conflictWarn}
+                <button onClick={() => setConflictWarn('')} className="ml-2 text-amber-400/70 hover:text-amber-400">✕</button>
+              </div>
+            )}
+
             <ReactFlow
               nodes={nodes.map(n => ({
                 ...n,
-                data: { ...n.data, error: errorIds.has(n.id) },
+                data: {
+                  ...n.data,
+                  error: errorIds.has(n.id) || nodeErrors.has(n.id),
+                  testState: testNodeStates[n.id],
+                  isStart: startNodeId === n.id,
+                },
               }))}
               edges={edges}
               onNodesChange={onNodesChange}
@@ -1431,18 +2056,33 @@ export default function AIStudio() {
 
             {/* Test run drawer */}
             {showTest && (
-              <TestRunPanel workflowId={idRef.current} onClose={() => setShowTest(false)} />
+              <TestRunPanel
+                workflowId={idRef.current}
+                onClose={() => {
+                  setShowTest(false);
+                  setSelectedTestStep(null);
+                  setTestNodeStates({});
+                }}
+                onStepSelect={step => {
+                  setSelectedTestStep(step);
+                  // When a step is clicked, also deselect canvas node so the right panel shows the log
+                  if (step) setSelectedNode(null);
+                }}
+                onNodeHighlight={setTestNodeStates}
+                selectedStepId={selectedTestStep?.node_id ?? null}
+              />
             )}
           </div>
         )}
       </div>
 
-      {/* ── Right panel: node config ── */}
+      {/* ── Right panel: node config / test step log ── */}
       {!noWorkflowLoaded && (
         <NodeConfigPanel
           node={selectedNode}
           onChange={updateNode}
           onDelete={deleteNode}
+          testStep={selectedTestStep}
         />
       )}
     </div>

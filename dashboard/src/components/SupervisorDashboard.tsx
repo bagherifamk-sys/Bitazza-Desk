@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Agent, QueueItem, SLARiskTicket, SupervisorStats, ChannelHealth, PendingStale, Ticket } from '../types';
 import { api } from '../api';
+import { usePerm } from '../PermissionContext';
 import { Avatar } from './ui/Avatar';
 import { SLATimer } from './ui/SLATimer';
 import { AgentCardSkeleton } from './ui/Skeleton';
@@ -297,8 +298,9 @@ function AgentSlideOver({ agent, agents, onClose, onReassign }: { agent: Agent; 
   const [tickets, setTickets]       = useState<Ticket[]>([]);
   const [loading, setLoading]       = useState(true);
   const [reassigning, setReassigning] = useState<string | null>(null);
-  const navigate = useNavigate();
-  const dropRef  = useRef<HTMLDivElement>(null);
+  const navigate    = useNavigate();
+  const dropRef     = useRef<HTMLDivElement>(null);
+  const canReassign = usePerm('supervisor.reassign');
 
   useEffect(() => {
     api.getAgentTickets(agent.id)
@@ -381,7 +383,7 @@ function AgentSlideOver({ agent, agents, onClose, onReassign }: { agent: Agent; 
                     <div className="flex items-center gap-2">
                       <SLATimer deadline={t.sla_deadline ?? ''} />
                       {/* Reassign dropdown */}
-                      <div className="relative">
+                      {canReassign && <div className="relative">
                         <button
                           onClick={() => setReassigning(reassigning === t.id ? null : t.id)}
                           className="text-[10px] text-text-muted hover:text-text-primary bg-surface-3 ring-1 ring-surface-5 rounded px-2 py-0.5 transition-colors"
@@ -407,7 +409,7 @@ function AgentSlideOver({ agent, agents, onClose, onReassign }: { agent: Agent; 
                             ))}
                           </div>
                         )}
-                      </div>
+                      </div>}
                     </div>
                   </div>
                   {/* Customer + last message — clickable */}

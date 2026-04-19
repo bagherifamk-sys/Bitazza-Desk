@@ -503,13 +503,23 @@ def get_agents_availability(user_id: str = Depends(get_user_id)):
 # ---------------------------------------------------------------------------
 
 ALL_PERMISSIONS = [
+    # Pages
     "section.home", "section.inbox", "section.supervisor", "section.analytics",
-    "section.metrics", "section.admin", "section.studio",
+    "section.metrics", "section.admin", "section.studio", "section.knowledge",
+    # Inbox / conversations
     "inbox.reply", "inbox.assign", "inbox.close", "inbox.claim",
     "inbox.escalate", "inbox.internal_note",
-    "supervisor.whisper",
-    "studio.publish",
-    "admin.agents", "admin.roles", "admin.settings",
+    "inbox.set_priority", "inbox.set_tags",
+    # Supervision
+    "supervisor.whisper", "supervisor.reassign",
+    # Bot Studio
+    "studio.create", "studio.edit", "studio.delete", "studio.test", "studio.publish",
+    # Admin sub-sections
+    "admin.agents", "admin.roles",
+    "admin.tags", "admin.canned_responses", "admin.assignment_rules",
+    "admin.sla_targets", "admin.bot_config", "admin.report_settings",
+    # Knowledge base
+    "knowledge.read", "knowledge.write",
 ]
 
 @router.get("/roles")

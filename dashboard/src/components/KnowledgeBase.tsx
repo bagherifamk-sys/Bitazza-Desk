@@ -424,7 +424,7 @@ export default function KnowledgeBase({ currentUser: _currentUser }: Props) {
   const [previewItem, setPreviewItem] = useState<KnowledgeItem | null>(null);
 
   const canWrite = (_currentUser.permissions ?? []).some(
-    p => p === 'knowledge.*' || p === '*' || p === 'section.knowledge'
+    p => p === 'knowledge.write' || p === 'knowledge.*' || p === '*'
   );
 
   const loadItems = async () => {

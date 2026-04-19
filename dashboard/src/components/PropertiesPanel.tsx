@@ -111,7 +111,9 @@ const PANEL_TABS = [
 ];
 
 export default function PropertiesPanel({ ticket, onUpdate, partialDraft = '', onAcceptDraft, onSelectTicket }: Props) {
-  const canAssign = usePerm('inbox.assign');
+  const canAssign      = usePerm('inbox.assign');
+  const canSetPriority = usePerm('inbox.set_priority');
+  const canSetTags     = usePerm('inbox.set_tags');
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'details' | 'copilot'>('details');
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -227,12 +229,14 @@ export default function PropertiesPanel({ ticket, onUpdate, partialDraft = '', o
                   onChange={v => handleStatus(v as TicketStatus)}
                 />
 
-                <Select
-                  label="Priority"
-                  value={String(ticket.priority)}
-                  options={PRIORITY_OPTIONS.map(p => ({ value: String(p.value), label: p.label }))}
-                  onChange={v => handlePriority(Number(v) as Priority)}
-                />
+                {canSetPriority && (
+                  <Select
+                    label="Priority"
+                    value={String(ticket.priority)}
+                    options={PRIORITY_OPTIONS.map(p => ({ value: String(p.value), label: p.label }))}
+                    onChange={v => handlePriority(Number(v) as Priority)}
+                  />
+                )}
 
                 <div>
                   <div className="flex items-center justify-between mb-1">
@@ -335,7 +339,7 @@ export default function PropertiesPanel({ ticket, onUpdate, partialDraft = '', o
             </Section>
 
             {/* Tags */}
-            <Section>
+            {canSetTags && <Section>
               <SectionHeading>Tags</SectionHeading>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {allTags.map(tag => (
@@ -371,7 +375,7 @@ export default function PropertiesPanel({ ticket, onUpdate, partialDraft = '', o
                   Add
                 </button>
               </div>
-            </Section>
+            </Section>}
 
             {/* Live Account (Core API) */}
             {ticket.customer?.bitazza_uid && (

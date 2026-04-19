@@ -48,11 +48,14 @@ router.get('/', requirePermission('section.supervisor'), async (req, res) => {
   const includeInactive = req.query.include_inactive === 'true';
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, email, role, team, state, active_chats, max_chats,
-              skills, shift, active, avatar_url
-       FROM users
-       ${includeInactive ? '' : 'WHERE active = true'}
-       ORDER BY name`
+      `SELECT u.id, u.name, u.email, u.role, u.team, u.state, u.max_chats,
+              u.skills, u.shift, u.active, u.avatar_url,
+              COUNT(t.id) FILTER (WHERE t.status NOT IN ('Closed_Resolved','Closed_Unresponsive','Orphaned')) AS active_chats
+       FROM users u
+       LEFT JOIN tickets t ON t.assigned_to = u.id
+       ${includeInactive ? '' : 'WHERE u.active = true'}
+       GROUP BY u.id
+       ORDER BY u.name`
     );
     res.json(rows);
   } catch (err) {

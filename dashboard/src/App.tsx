@@ -814,6 +814,14 @@ export default function App() {
   const [wsSocket, setWsSocket] = useState<WebSocket | null>(null);
   const loadTicketsRef = useRef<() => void>(() => {});
 
+  // Load real agent status from DB on mount
+  useEffect(() => {
+    api.getAgents().then(agents => {
+      const me = agents.find(a => a.id === user?.id);
+      if (me) setMyStatus((me.state ?? me.status ?? 'Available') as AgentStatus);
+    }).catch(() => {});
+  }, []);
+
   // Apply theme on mount and change
   useEffect(() => { applyTheme(theme); }, [theme]);
 
@@ -935,6 +943,7 @@ export default function App() {
   const handleSelectAndNavigate = (id: string) => { handleSelect(id); navigate('/inbox'); };
   const handleViewChange = (v: InboxView) => { sessionStorage.setItem('inboxView', v); setView(v); };
   const handleStatusFilterChange = (f: StatusFilter) => { sessionStorage.setItem('inboxStatusFilter', f); setStatusFilter(f); };
+  const handleNavigateInbox = (v: InboxView, f: StatusFilter) => { handleViewChange(v); handleStatusFilterChange(f); navigate('/inbox'); };
   const handleSearchChange = (s: string) => { sessionStorage.setItem('inboxSearch', s); setSearch(s); };
   const handleLogin = (u: AuthUser) => { setAuthUser(u); setUser(u); };
   const handleLogout = () => { setAuthUser(null); setUser(null); sessionStorage.clear(); };
@@ -972,7 +981,7 @@ export default function App() {
           <div className="flex flex-1 overflow-hidden">
             <Routes>
               <Route path="/" element={
-                <HomeDashboard onSelectTicket={handleSelect} />
+                <HomeDashboard onSelectTicket={handleSelect} onNavigateInbox={handleNavigateInbox} />
               } />
               <Route path="/inbox" element={
                 <Workspace

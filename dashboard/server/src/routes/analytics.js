@@ -60,6 +60,7 @@ router.get('/', async (req, res) => {
       q(`
         SELECT
           COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status = 'Closed_Resolved')::int AS resolved,
           (SELECT json_agg(json_build_object('date', day, 'count', cnt) ORDER BY day)
            FROM (SELECT DATE(created_at) AS day, COUNT(*)::int AS cnt
                  FROM tickets WHERE ${w} GROUP BY day) d) AS by_day,
@@ -179,6 +180,7 @@ router.get('/', async (req, res) => {
     res.json({
       volume: {
         total:       volume.rows[0]?.total      ?? 0,
+        resolved:    volume.rows[0]?.resolved    ?? 0,
         by_day:      volume.rows[0]?.by_day      ?? [],
         by_channel:  volume.rows[0]?.by_channel  ?? [],
         by_category: volume.rows[0]?.by_category ?? [],

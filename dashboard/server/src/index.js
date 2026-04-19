@@ -98,7 +98,7 @@ app.use((err, req, res, _next) => {
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-const PORT = process.env.SERVER_PORT || 4000;
+const PORT = process.env.PORT || process.env.SERVER_PORT || 4000;
 
 async function boot() {
   // Connect Redis (non-blocking — app still starts if Redis is down)

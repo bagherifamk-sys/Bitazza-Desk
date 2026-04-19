@@ -666,14 +666,14 @@ class TestNormalFlowsUnaffected:
     def test_successful_response_not_escalated(self, regression_patches):
         """Happy path: normal answer returned, escalated=False, no retries needed."""
         regression_patches.models.generate_content.return_value = _gemini_text_response(
-            _json_payload("Your KYC status is approved.", confidence=0.92)
+            _json_payload("Here is how to use the app.", confidence=0.92)
         )
 
         from engine.agent import chat
-        result = chat("conv-r1", "user-r", "What is my KYC status?", category="other")
+        result = chat("conv-r1", "user-r", "How do I use the app?", category="other")
 
         assert result.escalated is False
-        assert "KYC status is approved" in result.text
+        assert "Here is how to use the app" in result.text
         regression_patches.models.generate_content.assert_called_once()
 
     def test_user_requested_human_escalates_without_calling_gemini(self):

@@ -46,9 +46,10 @@ class TestDefaultWorkflowOutputEquivalence:
     """
 
     @pytest.mark.parametrize("category,message,expected_escalated", [
-        ("kyc_verification", "What is my KYC status?", False),
-        ("account_restriction", "Why is my account suspended?", False),
-        ("withdrawal_issue", "My withdrawal is stuck", False),
+        # Account-lookup categories always escalate when no workflow is active
+        ("kyc_verification", "What is my KYC status?", True),
+        ("account_restriction", "Why is my account suspended?", True),
+        ("withdrawal_issue", "My withdrawal is stuck", True),
         ("password_2fa_reset", "I cannot login, reset my password", False),
         ("fraud_security", "I think my account was hacked", True),
         ("other", "How do I use the app?", False),
@@ -90,39 +91,22 @@ class TestDefaultWorkflowOutputEquivalence:
         from engine.agent import detect_language
         assert detect_language(message) == expected_lang
 
-    def test_kyc_default_workflow_forces_profile_lookup_first_turn(self):
+    def test_kyc_no_workflow_escalates_to_specialist(self):
         """
-        On first turn for kyc_verification, engine forces get_user_profile tool call.
-        Default workflow must preserve this behavior.
+        When no workflow is active, kyc_verification must escalate immediately
+        to a human specialist without calling Gemini.
         """
         from engine.agent import chat
 
-        fn_call = MagicMock(); fn_call.name = "get_user_profile"; fn_call.args = {}
-        fn_part = MagicMock(); fn_part.function_call = fn_call; fn_part.text = None
-        fn_content = MagicMock(); fn_content.parts = [fn_part]
-        fn_candidate = MagicMock(); fn_candidate.content = fn_content
-        first_response = MagicMock(); first_response.candidates = [fn_candidate]
-
-        second_response = _gemini_resp(
-            {"response": "KYC pending", "confidence": 0.9, "needs_human": False, "resolved": False}
-        )
-
         with patch("engine.agent.client") as mock_client, \
-             patch("engine.agent.get_history", return_value=[]), \
-             patch("engine.agent.collection_count", return_value=0), \
-             patch("engine.agent.retrieve_with_fallback", return_value=[]), \
              patch("engine.agent.get_ticket_id_by_conversation", return_value="t1"), \
-             patch("engine.agent.update_ticket_status"), \
-             patch("engine.agent.has_successful_bot_reply", return_value=False), \
-             patch("engine.agent.update_customer_from_profile"), \
-             patch("engine.agent.TOOLS", {"get_user_profile": lambda **kw: {"kyc": "pending"}}):
+             patch("engine.agent.update_ticket_status"):
 
-            mock_client.models.generate_content.side_effect = [first_response, second_response]
             result = chat("conv-1", "user-1", "KYC status?", category="kyc_verification")
 
-        # Two Gemini calls: one for tool, one for final text
-        assert mock_client.models.generate_content.call_count == 2
-        assert result.text == "KYC pending"
+        assert result.escalated is True
+        assert result.escalation_reason == "no_active_workflow"
+        mock_client.models.generate_content.assert_not_called()
 
     def test_other_category_never_calls_account_tools(self):
         """'other' category must never call account tools — RAG only."""

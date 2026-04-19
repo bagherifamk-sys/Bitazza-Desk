@@ -299,7 +299,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
   // Auto-scroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
+  }, [messages, loading, showPrevTickets]);
 
   // Focus input on open
   useEffect(() => {

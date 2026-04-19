@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
@@ -89,10 +90,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "https://dashboard-nine-zeta-63.vercel.app,http://localhost:3001,http://localhost:3002,http://localhost:5173",
+)
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict to Freedom/Bitazza domains in production
-    allow_credentials=False,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

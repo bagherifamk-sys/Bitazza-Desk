@@ -30,10 +30,11 @@ def _row_to_workflow(row) -> "Workflow":
     nodes_raw = json.loads(row["nodes_json"]) if isinstance(row["nodes_json"], str) else (row["nodes_json"] or [])
     edges_raw = json.loads(row["edges_json"]) if isinstance(row["edges_json"], str) else (row["edges_json"] or [])
 
-    # Derive next_node_id and condition branches from edges
+    # Derive next_node_id, condition branches, and error branch from edges
     next_map: dict = {}
     true_map: dict = {}
     false_map: dict = {}
+    error_map: dict = {}
     for edge in edges_raw:
         src = edge.get("source")
         tgt = edge.get("target")
@@ -42,6 +43,8 @@ def _row_to_workflow(row) -> "Workflow":
             true_map[src] = tgt
         elif handle == "false":
             false_map[src] = tgt
+        elif handle == "error":
+            error_map[src] = tgt
         else:
             next_map[src] = tgt
 
@@ -55,8 +58,12 @@ def _row_to_workflow(row) -> "Workflow":
             config.setdefault("true_next",  true_map.get(n["id"]))
             config.setdefault("false_next", false_map.get(n["id"]))
 
-        next_node_id = n.get("next_node_id") or next_map.get(n["id"])
-        nodes.append(WorkflowNode(id=n["id"], kind=kind, config=config, next_node_id=next_node_id))
+        next_node_id     = n.get("next_node_id") or next_map.get(n["id"])
+        on_error_next_id = n.get("on_error_next_id") or error_map.get(n["id"])
+        nodes.append(WorkflowNode(
+            id=n["id"], kind=kind, config=config,
+            next_node_id=next_node_id, on_error_next_id=on_error_next_id,
+        ))
 
     return Workflow(
         id=row["id"],
@@ -241,7 +248,7 @@ def update_execution_status(
                     SET status = %s,
                         current_node_id = COALESCE(%s, current_node_id),
                         waiting_for = %s,
-                        variables_json = COALESCE(%s::text, variables_json),
+                        variables_json = COALESCE(%s::jsonb, variables_json),
                         updated_at = NOW()
                     WHERE id = %s
                 """, (status.value, current_node_id, waiting_for,

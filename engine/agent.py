@@ -71,7 +71,8 @@ class AgentResponse:
                  agent_name: str | None = None, agent_avatar: str | None = None,
                  agent_avatar_url: str | None = None, resolved: bool = False,
                  specialist_intro: str | None = None, confidence: float = 1.0,
-                 upgraded_category: str | None = None):
+                 upgraded_category: str | None = None,
+                 transition_message: str | None = None):
         self.text = text
         self.language = language
         self.escalated = escalated
@@ -84,7 +85,7 @@ class AgentResponse:
         self.specialist_intro = specialist_intro
         self.confidence = confidence
         self.upgraded_category = upgraded_category  # set when mid-convo category switch occurs
-        self.transition_message: str | None = None  # outgoing-agent farewell shown before specialist reply
+        self.transition_message: str | None = transition_message  # outgoing-agent farewell shown before specialist reply
 
 
 _UPGRADE_TRANSITION_MESSAGES: dict[str, dict[str, str]] = {

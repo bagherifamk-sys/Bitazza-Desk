@@ -163,6 +163,22 @@ def chat(
                else "ไม่สามารถให้คำแนะนำการลงทุนหรือทางการเงินได้ สำหรับการตัดสินใจซื้อขาย กรุณาปรึกษาที่ปรึกษาทางการเงินที่มีคุณสมบัติ")
         return AgentResponse(text=msg, language=language)
 
+    # 2b. No active workflow for account-specific category → escalate to human specialist.
+    # These categories require live account data; without a workflow providing structured
+    # guardrails, the safe action is to hand off rather than let free-form AI handle it.
+    _ACCOUNT_CATEGORIES = {"kyc_verification", "account_restriction", "withdrawal_issue"}
+    if category in _ACCOUNT_CATEGORIES:
+        ticket_id = get_ticket_id_by_conversation(conversation_id)
+        if ticket_id:
+            update_ticket_status(ticket_id, "pending_human")
+        return AgentResponse(
+            text=build_handoff_message(category, language),
+            language=language,
+            escalated=True,
+            escalation_reason="no_active_workflow",
+            ticket_id=ticket_id if ticket_id else None,
+        )
+
     # 3a. Mid-conversation category upgrade detection
     # If the user is in "other" but asks about KYC / withdrawals / account restrictions,
     # transparently re-route to the dedicated specialist agent for that category.

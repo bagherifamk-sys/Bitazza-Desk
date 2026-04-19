@@ -38,6 +38,14 @@ class WorkflowRouter:
 
         if active_execution is not None:
             workflow = load_workflow_by_id(active_execution.workflow_id)
+            # If the workflow was deactivated after this execution started, fall through.
+            if workflow is None or not workflow.published:
+                return RouterResult(
+                    matched_workflow=None,
+                    active_execution=None,
+                    fallthrough=True,
+                    category_upgrade=None,
+                )
             upgrade = detect_upgrade(message.text, active_execution.category)
             return RouterResult(
                 matched_workflow=workflow,

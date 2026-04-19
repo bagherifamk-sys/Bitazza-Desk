@@ -132,7 +132,7 @@ function getToken(): string {
 }
 
 function apiBase(): string {
-  return (window as any).__API_BASE__ || 'http://localhost:4000';
+  return (import.meta.env.VITE_API_URL as string | undefined) || (window as any).__API_BASE__ || '';
 }
 
 async function apiFetch(path: string) {
@@ -476,15 +476,18 @@ export default function User360() {
   const [custList, setCustList] = useState<Page<CustomerRow> | null>(null);
   const [custPage, setCustPage] = useState(1);
   const [custLoading, setCustLoading] = useState(false);
+  const [custError, setCustError] = useState('');
 
   const loadCustomers = useCallback(async (page: number) => {
     setCustLoading(true);
+    setCustError('');
     try {
       const data = await apiFetch(`/api/users?page=${page}&page_size=25`);
       setCustList(data);
       setCustPage(page);
-    } catch { /* non-fatal */ }
-    finally { setCustLoading(false); }
+    } catch (err) {
+      setCustError(err instanceof Error ? err.message : 'Failed to load customers');
+    } finally { setCustLoading(false); }
   }, []);
 
   useEffect(() => { loadCustomers(1); }, [loadCustomers]);
@@ -654,6 +657,11 @@ export default function User360() {
 
               {custLoading && !custList ? (
                 <Skeleton rows={10} />
+              ) : custError ? (
+                <div className="flex flex-col items-center justify-center py-16 text-text-muted gap-2">
+                  <p className="text-sm text-red-400">{custError}</p>
+                  <button onClick={() => loadCustomers(custPage)} className="text-xs text-brand hover:underline">Retry</button>
+                </div>
               ) : custList && custList.items.length > 0 ? (
                 <>
                   <div className="overflow-x-auto">

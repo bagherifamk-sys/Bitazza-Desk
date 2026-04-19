@@ -13,8 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Create data and uploads directories
-RUN mkdir -p data/chroma uploads
+# Create data and uploads directories (volume will mount at /data)
+RUN mkdir -p /data/chroma uploads
 
 EXPOSE 8080
 

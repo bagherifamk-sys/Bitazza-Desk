@@ -23,6 +23,7 @@ const knowledgeRouter      = require('./routes/knowledge');
 const usersRouter          = require('./routes/users');
 const assignmentRulesRouter        = require('./routes/assignmentRules');
 const notificationChannelsRouter   = require('./routes/notificationChannels');
+const tagsRouter                   = require('./routes/tags');
 
 // Auth middleware
 const { authenticate, requirePermission } = require('./middleware/auth');
@@ -37,8 +38,15 @@ const server = http.createServer(app);
 
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
+const ALLOWED_ORIGINS = (process.env.FRONTEND_URL || 'http://localhost:3002')
+  .split(',').map(s => s.trim());
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3002',
+  origin: (origin, cb) => {
+    // allow requests with no origin (curl, mobile apps, same-origin)
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: ${origin} not allowed`));
+  },
   credentials: true,
 }));
 app.use(express.json({ limit: '2mb' }));
@@ -69,6 +77,7 @@ app.use('/api/knowledge',       knowledgeRouter);
 app.use('/api/users', authenticate, requirePermission('section.users'), usersRouter);
 app.use('/api/assignment-rules',          assignmentRulesRouter);
 app.use('/api/admin/notification-channels', notificationChannelsRouter);
+app.use('/api/tags',                        tagsRouter);
 
 // Health check — must be before static/SPA fallback
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));

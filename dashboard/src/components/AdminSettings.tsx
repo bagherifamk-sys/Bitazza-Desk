@@ -1414,12 +1414,15 @@ interface ChannelField {
 
 type ChannelKey = keyof typeof CHANNEL_META;
 
+const VISIBLE_CHANNELS: ChannelKey[] = ['slack', 'email'];
+
 function NotificationsTab() {
   const { toast } = useToast();
   const [configs, setConfigs] = useState<Record<string, NotificationChannelConfig>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<Record<string, boolean>>({});
   const [testing, setTesting] = useState<Record<string, 'daily' | 'weekly' | null>>({});
+  const [errors, setErrors] = useState<Record<string, Record<string, string>>>({});
   // track which channels were originally saved (have DB data)
   const [savedChannels, setSavedChannels] = useState<Set<string>>(new Set());
 
@@ -1467,7 +1470,21 @@ function NotificationsTab() {
     }
   };
 
+  const validate = (channel: string): boolean => {
+    const cfg = configs[channel];
+    const meta = CHANNEL_META[channel];
+    const fieldErrors: Record<string, string> = {};
+    for (const field of meta.fields) {
+      if (!cfg.config[field.key]?.trim()) {
+        fieldErrors[field.key] = `${field.label} is required`;
+      }
+    }
+    setErrors(prev => ({ ...prev, [channel]: fieldErrors }));
+    return Object.keys(fieldErrors).length === 0;
+  };
+
   const save = async (channel: string) => {
+    if (!validate(channel)) return;
     const cfg = configs[channel];
     setSaving(prev => ({ ...prev, [channel]: true }));
     try {
@@ -1503,12 +1520,14 @@ function NotificationsTab() {
 
   return (
     <div className="space-y-4">
-      {(Object.keys(CHANNEL_META) as ChannelKey[]).map(key => {
+      {VISIBLE_CHANNELS.map(key => {
         const meta = CHANNEL_META[key];
         const cfg = configs[key] ?? { channel: key, enabled: false, config: {}, reports: { daily: true, weekly: true } };
         const isSaving = saving[key] ?? false;
         const testingType = testing[key] ?? null;
         const isConnected = savedChannels.has(key) && Object.values(cfg.config).some(Boolean);
+        const fieldErrors = errors[key] ?? {};
+        const allFieldsFilled = meta.fields.every(f => cfg.config[f.key]?.trim());
 
         // Build a summary of connected credentials (mask sensitive values)
         const connectedSummary = isConnected ? meta.fields
@@ -1567,14 +1586,22 @@ function NotificationsTab() {
             <div className="space-y-3 mb-4">
               {meta.fields.map(field => (
                 <div key={field.key}>
-                  <label className="block text-xs font-medium text-text-secondary mb-1">{field.label}</label>
+                  <label className="block text-xs font-medium text-text-secondary mb-1">
+                    {field.label} <span className="text-red-500">*</span>
+                  </label>
                   <input
                     type={field.type}
                     value={cfg.config[field.key] ?? ''}
-                    onChange={e => updateField(key, field.key, e.target.value)}
+                    onChange={e => {
+                      updateField(key, field.key, e.target.value);
+                      if (fieldErrors[field.key]) setErrors(prev => ({ ...prev, [key]: { ...prev[key], [field.key]: '' } }));
+                    }}
                     placeholder={field.placeholder}
-                    className="w-full text-xs bg-surface-0 border border-surface-5 rounded-md px-3 py-1.5 text-text-primary placeholder-text-muted focus:outline-none focus:ring-1 focus:ring-brand"
+                    className={`w-full text-xs bg-surface-0 border rounded-md px-3 py-1.5 text-text-primary placeholder-text-muted focus:outline-none focus:ring-1 focus:ring-brand ${fieldErrors[field.key] ? 'border-red-500' : 'border-surface-5'}`}
                   />
+                  {fieldErrors[field.key] && (
+                    <p className="mt-1 text-xs text-red-500">{fieldErrors[field.key]}</p>
+                  )}
                 </div>
               ))}
             </div>
@@ -1610,7 +1637,7 @@ function NotificationsTab() {
               <div className="flex-1" />
               <button
                 onClick={() => save(key)}
-                disabled={isSaving}
+                disabled={isSaving || !allFieldsFilled}
                 className="text-xs px-4 py-1.5 bg-brand hover:bg-brand-dim text-white rounded-md transition-colors disabled:opacity-40 flex items-center gap-1.5"
               >
                 {isSaving ? <><Spinner size="xs" /> Saving…</> : 'Save'}

@@ -12,6 +12,8 @@ class TestRunRequest(BaseModel):
     channel: str = "widget"
     category: str = "other"
     language: str = "en"
+    user_id: str = "test-user"
+    extra_variables: dict[str, Any] = {}
 
 
 @router.post("/test-run")
@@ -36,6 +38,8 @@ def studio_test_run(body: TestRunRequest):
             channel=body.channel,
             category=body.category,
             language=body.language,
+            user_id=body.user_id,
+            extra_variables=body.extra_variables or {},
         )
         return result
 

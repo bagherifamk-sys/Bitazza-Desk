@@ -6,7 +6,7 @@ primary_region = "sin"
 [env]
   ENV = "production"
   CHROMA_PATH = "/data/chroma"
-  USE_MOCK_USER_API = "false"
+  USE_MOCK_USER_API = "true"
   USER_API_BASE_URL = "https://csbot-api.fly.dev"
   USER_API_KEY = "mock-dev-token"
   MAX_RAG_CHUNKS = "5"

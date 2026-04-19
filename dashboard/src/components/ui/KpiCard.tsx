@@ -5,7 +5,7 @@ interface KpiCardProps {
   value: number | string;
   sub?: string;
   /** Semantic color key for left-border accent */
-  accent?: 'brand' | 'blue' | 'green' | 'amber';
+  accent?: 'brand' | 'blue' | 'green' | 'amber' | 'purple';
   trend?: number; // positive = up, negative = down
   /** Whether a positive trend is good (green) or bad (red) */
   trendGoodDirection?: 'up' | 'down';
@@ -15,10 +15,11 @@ interface KpiCardProps {
 }
 
 const ACCENT = {
-  brand: { border: 'border-l-brand', text: 'text-brand' },
-  blue:  { border: 'border-l-accent-blue',  text: 'text-accent-blue'  },
-  green: { border: 'border-l-accent-green', text: 'text-accent-green' },
-  amber: { border: 'border-l-accent-amber', text: 'text-accent-amber' },
+  brand:  { border: 'border-l-brand',         text: 'text-brand'         },
+  blue:   { border: 'border-l-accent-blue',   text: 'text-accent-blue'   },
+  green:  { border: 'border-l-accent-green',  text: 'text-accent-green'  },
+  amber:  { border: 'border-l-accent-amber',  text: 'text-accent-amber'  },
+  purple: { border: 'border-l-purple-400',    text: 'text-purple-400'    },
 };
 
 export function KpiCard({ label, value, sub, accent = 'blue', trend, trendGoodDirection = 'up', sparkline, pulse = false, onClick }: KpiCardProps) {

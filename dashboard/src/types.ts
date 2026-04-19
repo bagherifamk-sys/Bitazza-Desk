@@ -24,7 +24,8 @@ export type TicketCategory =
   | 'account_restriction'
   | 'password_2fa_reset'
   | 'fraud_security'
-  | 'withdrawal_issue';
+  | 'withdrawal_issue'
+  | 'ai_handling';
 
 export type InboxView =
   | 'all'

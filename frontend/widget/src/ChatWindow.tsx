@@ -264,10 +264,12 @@ export default function ChatWindow({ cfg, onClose }: Props) {
       timestamp: Date.now(),
       senderName: 'Bitazza Support',
     }]);
-    // Check for an open ticket from a previous session (only if customer_id is known)
+    // Check for an open ticket from a *previous* session (only if customer_id is known)
     if (getStoredCustomerId()) {
       fetchOpenTicket(cfg).then((ticket) => {
         if (!ticket) return;
+        // Skip if this is the conversation we just started — nothing to "resume".
+        if (ticket.id === convId) return;
         // Verify the ticket actually has messages before showing the resume banner.
         // A ticket can be "open" in the DB (created via dashboard/email) while having
         // zero messages in the widget conversation store — nothing to resume in that case.
@@ -279,7 +281,7 @@ export default function ChatWindow({ cfg, onClose }: Props) {
         });
       });
     }
-  }, [cfg]);
+  }, [cfg, convId]);
 
   // Auto-scroll
   useEffect(() => {

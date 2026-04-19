@@ -541,10 +541,10 @@ function CSATTab({ data }: { data: InsightsData }) {
                   nameKey="score"
                   cx="50%" cy="50%"
                   outerRadius={80}
-                  label={({ score, percent }) => `${score}★ ${((percent ?? 0) * 100).toFixed(0)}%`}
+                  label={(props) => `${(props as unknown as Record<string, unknown>).score}★ ${(((props.percent as number) ?? 0) * 100).toFixed(0)}%`}
                   labelLine={false}
                 >
-                  {csat.distribution.map((entry, i) => (
+                  {csat.distribution.map((_entry, i) => (
                     <Cell key={i} fill={CSAT_COLORS[i] ?? CHART_COLORS[i]} />
                   ))}
                 </Pie>
@@ -912,7 +912,7 @@ function SlaQualityTab({ data }: { data: InsightsData }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-surface-5)" horizontal={false} />
                 <XAxis type="number" domain={[0, 1]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fontSize: 10, fill: 'var(--color-text-muted)' }} />
                 <YAxis type="category" dataKey="category" width={140} tick={{ fontSize: 10, fill: 'var(--color-text-muted)' }} />
-                <Tooltip formatter={(v: number) => [`${(v * 100).toFixed(1)}%`]} />
+                <Tooltip formatter={(v: unknown) => [`${(Number(v) * 100).toFixed(1)}%`]} />
                 <Bar dataKey="breach_rate" name="Breach Rate" fill="#E63946" radius={[0, 3, 3, 0]} />
               </BarChart>
             </ResponsiveContainer>

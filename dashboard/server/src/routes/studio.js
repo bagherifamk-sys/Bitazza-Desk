@@ -193,7 +193,20 @@ router.post('/flows/:id/publish', requirePermission('studio.publish'), async (re
       [req.user.id, id]
     );
 
-    res.json({ ok: true, message: 'Workflow published successfully.' });
+    // Check for trigger conflicts with other published workflows
+    const { trigger_channel, trigger_category } = rows[0];
+    const { rows: conflicts } = await pool.query(
+      `SELECT name FROM workflows
+       WHERE id != $1 AND published = true
+         AND (trigger_channel = $2 OR trigger_channel = 'any' OR $2 = 'any')
+         AND (trigger_category = $3 OR trigger_category = 'any' OR $3 = 'any')`,
+      [id, trigger_channel, trigger_category]
+    );
+    const warnings = conflicts.length
+      ? [`Trigger overlaps with live workflow: "${conflicts[0].name}". The first matching workflow will run.`]
+      : [];
+
+    res.json({ ok: true, message: 'Workflow published successfully.', warnings });
   } catch (err) {
     console.error('[studio] publish error:', err.message);
     res.status(500).json({ error: err.message });
@@ -217,23 +230,51 @@ router.post('/flows/:id/unpublish', requirePermission('studio.publish'), async (
 // Proxies to Python FastAPI which runs the workflow in dry-run mode.
 router.post('/flows/:id/test-run', async (req, res) => {
   const { id } = req.params;
-  const { sample_message = 'Hello', channel = 'widget', category = 'other', language = 'en' } = req.body;
+  const {
+    sample_message = 'Hello',
+    channel = 'widget',
+    category = 'other',
+    language = 'en',
+    user_id = 'test-user',
+    extra_variables = {},
+  } = req.body;
 
   try {
     const { rows } = await pool.query(`SELECT * FROM workflows WHERE id=$1`, [id]);
     if (!rows.length) return res.status(404).json({ error: 'Workflow not found' });
 
-    const result = await proxyPost('/api/studio/test-run', {
+    const result = await proxyPost('/studio/test-run', {
       workflow: rows[0],
       sample_message,
       channel,
       category,
       language,
+      user_id,
+      extra_variables,
     });
 
     res.status(result.status).json(result.body);
   } catch (err) {
     console.error('[studio] test-run error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/studio/flows/:id/executions ─────────────────────────────────────
+router.get('/flows/:id/executions', async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit ?? '50', 10), 200);
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, conversation_id, status, current_node_id, channel, category,
+              created_at, updated_at
+       FROM workflow_executions
+       WHERE workflow_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [req.params.id, limit]
+    );
+    res.json(rows);
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

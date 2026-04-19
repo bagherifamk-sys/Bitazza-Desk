@@ -553,7 +553,9 @@ router.post('/', async (req, res) => {
 
     // FR-05: VIP customers get priority 1 (if rule is enabled)
     const { rows: custRows } = await pool.query('SELECT tier FROM customers WHERE id=$1', [customer_id]);
-    if (vipAutoPriority1 && custRows[0]?.tier === 'VIP') p = 1;
+    const tier = (custRows[0]?.tier ?? '').toLowerCase();
+    if (vipAutoPriority1 && tier === 'vip') p = 1;
+    else if (p === 3 && (tier === 'ea' || tier === 'high_net_worth')) p = 2;
 
     const slaMinutes = p === 1 ? 10 : p === 2 ? 15 : 30;
     await pool.query(

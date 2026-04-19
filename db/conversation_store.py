@@ -232,6 +232,22 @@ def update_customer_from_profile(user_id: str, profile: dict) -> None:
         logger.exception("update_customer_from_profile failed for user_id=%s — non-fatal", user_id)
 
 
+_TIER_PRIORITY: dict[str, int] = {
+    "vip": 1,
+    "high_net_worth": 2,
+    "ea": 2,
+    "regular": 3,
+}
+
+
+def _priority_for_customer(cur, customer_id: str) -> int:
+    """Return ticket priority (1/2/3) based on the customer's tier."""
+    cur.execute("SELECT tier FROM customers WHERE id = %s", (customer_id,))
+    row = cur.fetchone()
+    tier = (row["tier"] or "regular").lower() if row else "regular"
+    return _TIER_PRIORITY.get(tier, 3)
+
+
 def create_conversation(user_id: str, platform: str, language: str = "en", issue_category: str | None = None) -> str:
     """
     Creates (or reuses) a customer row and opens a new ticket.
@@ -244,10 +260,11 @@ def create_conversation(user_id: str, platform: str, language: str = "en", issue
 
         ticket_id = str(uuid.uuid4())
         team = _CATEGORY_TEAM.get(issue_category, "cs")
+        priority = _priority_for_customer(cur, customer_id)
         cur.execute("""
             INSERT INTO tickets (id, customer_id, channel, status, category, priority, team)
-            VALUES (%s, %s, 'web', 'Open_Live', %s, 3, %s)
-        """, (ticket_id, customer_id, issue_category or 'ai_handling', team))
+            VALUES (%s, %s, 'web', 'Open_Live', %s, %s, %s)
+        """, (ticket_id, customer_id, issue_category or 'ai_handling', priority, team))
 
     return ticket_id  # ticket_id IS the conversation_id in the Python layer
 
@@ -472,14 +489,15 @@ def create_email_ticket(
     team = _CATEGORY_TEAM.get(category, "cs")
     with _conn() as conn:
         cur = conn.cursor()
+        priority = _priority_for_customer(cur, customer_id)
         cur.execute("""
             INSERT INTO tickets
                 (id, customer_id, channel, status, category, priority, team,
                  gmail_thread_id, subject)
-            VALUES (%s, %s, 'email', 'Open_Live', %s, 3, %s, %s, %s)
+            VALUES (%s, %s, 'email', 'Open_Live', %s, %s, %s, %s, %s)
         """, (
             ticket_id, customer_id,
-            category or "ai_handling", team,
+            category or "ai_handling", priority, team,
             gmail_thread_id, subject,
         ))
     return ticket_id

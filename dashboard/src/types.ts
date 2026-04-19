@@ -275,6 +275,14 @@ export interface KnowledgeItem {
   created_at: number; // unix seconds
 }
 
+export interface NotificationChannelConfig {
+  channel: string;
+  enabled: boolean;
+  config: Record<string, string>;
+  reports: { daily: boolean; weekly: boolean };
+  updated_at?: string | null;
+}
+
 // Legacy — kept so old components referencing Conversation don't break
 export interface Conversation {
   id: string;

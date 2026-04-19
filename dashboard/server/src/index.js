@@ -21,7 +21,8 @@ const coreRouter       = require('./routes/core');
 const rolesRouter          = require('./routes/roles');
 const knowledgeRouter      = require('./routes/knowledge');
 const usersRouter          = require('./routes/users');
-const assignmentRulesRouter = require('./routes/assignmentRules');
+const assignmentRulesRouter        = require('./routes/assignmentRules');
+const notificationChannelsRouter   = require('./routes/notificationChannels');
 
 // Auth middleware
 const { authenticate, requirePermission } = require('./middleware/auth');
@@ -66,7 +67,8 @@ app.use('/api/core',            coreRouter);
 app.use('/api/roles',           rolesRouter);
 app.use('/api/knowledge',       knowledgeRouter);
 app.use('/api/users', authenticate, requirePermission('section.users'), usersRouter);
-app.use('/api/assignment-rules', assignmentRulesRouter);
+app.use('/api/assignment-rules',          assignmentRulesRouter);
+app.use('/api/admin/notification-channels', notificationChannelsRouter);
 
 // Health check — must be before static/SPA fallback
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));

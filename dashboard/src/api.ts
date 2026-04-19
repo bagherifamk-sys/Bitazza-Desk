@@ -3,7 +3,7 @@ import type {
   Ticket, TicketDetail, TicketStatus, Priority, Agent, AgentRole,
   AgentStatus, InboxView, StatusFilter, SupervisorStats, QueueItem, SLARiskTicket,
   ChannelHealth, PendingStale,
-  AnalyticsFilters, RelatedTicket, KnowledgeItem,
+  AnalyticsFilters, RelatedTicket, KnowledgeItem, NotificationChannelConfig,
 } from './types';
 
 // ── Base URL ──────────────────────────────────────────────────────────────────
@@ -164,6 +164,16 @@ export const api = {
 
   updateAssignmentRule: (key: string, value: unknown) =>
     req(`/api/assignment-rules/${encodeURIComponent(key)}`, { method: 'PATCH', body: JSON.stringify({ value }) }),
+
+  // Notification channels
+  getNotificationChannels: () =>
+    req<NotificationChannelConfig[]>('/api/admin/notification-channels'),
+
+  saveNotificationChannel: (channel: string, payload: { enabled: boolean; config: Record<string, string>; reports: { daily: boolean; weekly: boolean } }) =>
+    req<NotificationChannelConfig>(`/api/admin/notification-channels/${channel}`, { method: 'PUT', body: JSON.stringify(payload) }),
+
+  testNotificationChannel: (channel: string, config: Record<string, string>, reportType: 'daily' | 'weekly' = 'daily') =>
+    req<{ ok: boolean }>(`/api/admin/notification-channels/${channel}/test`, { method: 'POST', body: JSON.stringify({ enabled: true, config, reports: { daily: true, weekly: true }, report_type: reportType }) }),
 
   // Supervisor
   getSupervisorLive: () =>

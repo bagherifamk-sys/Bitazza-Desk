@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { Agent, AgentRole } from '../types';
+import type { Agent, AgentRole, NotificationChannelConfig } from '../types';
 import type { AuthUser } from '../App';
 import { api } from '../api';
 import { Avatar } from './ui/Avatar';
 import { Spinner } from './ui/Spinner';
+import { useToast } from './ui/Toast';
 
-const TABS = ['Agents', 'Roles', 'Tags', 'Canned Responses', 'Assignment Rules', 'SLA Targets', 'Bot Config'] as const;
+const TABS = ['Agents', 'Roles', 'Tags', 'Canned Responses', 'Assignment Rules', 'SLA Targets', 'Bot Config', 'Report Settings'] as const;
 type Tab = typeof TABS[number];
 
 const TAB_SLUG: Record<Tab, string> = {
@@ -17,6 +18,7 @@ const TAB_SLUG: Record<Tab, string> = {
   'Assignment Rules': 'assignment-rules',
   'SLA Targets':      'sla-targets',
   'Bot Config':       'bot-config',
+  'Report Settings':  'report-settings',
 };
 const SLUG_TAB: Record<string, Tab> = Object.fromEntries(
   Object.entries(TAB_SLUG).map(([tab, slug]) => [slug, tab as Tab])
@@ -30,6 +32,7 @@ const TAB_ICONS: Record<Tab, string> = {
   'Assignment Rules': 'M4 6h16M4 10h16M4 14h16M4 18h16',
   'SLA Targets':      'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
   'Bot Config':       'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17H4a2 2 0 01-2-2V5a2 2 0 012-2h16a2 2 0 012 2v10a2 2 0 01-2 2h-1',
+  'Report Settings':  'M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9',
 };
 
 interface Props { currentUser: AuthUser; }
@@ -78,6 +81,7 @@ export default function AdminSettings({ currentUser }: Props) {
                tab === 'Canned Responses' ? 'Pre-written replies for common customer scenarios.' :
                tab === 'Assignment Rules' ? 'Configure routing logic per channel and category.' :
                tab === 'SLA Targets'      ? 'Set SLA response and resolution time targets per tier.' :
+               tab === 'Report Settings'  ? 'Configure daily and weekly ticket report delivery channels.' :
                'Configure bot persona, greeting, and fallback behavior.'}
             </p>
           </div>
@@ -89,6 +93,7 @@ export default function AdminSettings({ currentUser }: Props) {
           {tab === 'Assignment Rules' && <AssignmentRulesTab />}
           {tab === 'SLA Targets'      && <StubTab label="SLA Targets" description="Set SLA response and resolution time targets per tier: VIP 1 min · EA 3 min · Standard 10 min." />}
           {tab === 'Bot Config'       && <StubTab label="Bot Config" description="Configure bot persona, greeting, fallback message, and business hours. Use AI Studio for flow editing." />}
+          {tab === 'Report Settings'  && <NotificationsTab />}
         </div>
       </div>
     </div>
@@ -1324,6 +1329,280 @@ function ModalFooter({ onClose, onSave, saving, saveLabel, disabled = false }: {
       >
         {saving ? <><Spinner size="xs" /> Saving…</> : saveLabel}
       </button>
+    </div>
+  );
+}
+
+
+// ── Notifications tab ─────────────────────────────────────────────────────────
+
+const CHANNEL_META: Record<string, { label: string; icon: string; fields: ChannelField[] }> = {
+  slack: {
+    label: 'Slack',
+    icon: 'M5.042 15.165a2.528 2.528 0 01-2.52 2.523A2.528 2.528 0 010 15.165a2.527 2.527 0 012.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 012.521-2.52 2.527 2.527 0 012.521 2.52v6.313A2.528 2.528 0 018.834 24a2.528 2.528 0 01-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 01-2.521-2.52A2.528 2.528 0 018.834 0a2.528 2.528 0 012.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 012.521 2.521 2.528 2.528 0 01-2.521 2.521H2.522A2.528 2.528 0 010 8.834a2.528 2.528 0 012.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 012.522-2.521A2.528 2.528 0 0124 8.834a2.528 2.528 0 01-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 01-2.523 2.521 2.527 2.527 0 01-2.52-2.521V2.522A2.527 2.527 0 0115.165 0a2.528 2.528 0 012.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 012.523 2.522A2.528 2.528 0 0115.165 24a2.527 2.527 0 01-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 01-2.52-2.523 2.526 2.526 0 012.52-2.52h6.313A2.527 2.527 0 0124 15.165a2.528 2.528 0 01-2.522 2.523h-6.313z',
+    fields: [{ key: 'webhook_url', label: 'Webhook URL', placeholder: 'https://hooks.slack.com/services/…', type: 'url' }],
+  },
+  teams: {
+    label: 'Microsoft Teams',
+    icon: 'M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1V9.01a6.27 6.27 0 00-.79-.05 6.34 6.34 0 00-6.34 6.34 6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.33-6.34V8.69a8.18 8.18 0 004.78 1.52V6.76a4.85 4.85 0 01-1.01-.07z',
+    fields: [{ key: 'webhook_url', label: 'Webhook URL', placeholder: 'https://…webhook.office.com/webhookb2/…', type: 'url' }],
+  },
+  discord: {
+    label: 'Discord',
+    icon: 'M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03z',
+    fields: [{ key: 'webhook_url', label: 'Webhook URL', placeholder: 'https://discord.com/api/webhooks/…', type: 'url' }],
+  },
+  line: {
+    label: 'LINE Notify',
+    icon: 'M22.198 10.624C22.198 4.762 16.265 0 9 0S-4.198 4.762-4.198 10.624c0 5.273 4.667 9.692 10.974 10.533.427.092 1.01.282 1.157.646.132.331.086.848.042 1.183l-.187 1.126c-.058.331-.266 1.295 1.133.706 1.4-.588 7.542-4.444 10.289-7.606 1.896-2.08 2.988-4.196 2.988-6.588',
+    fields: [{ key: 'token', label: 'Access Token', placeholder: 'LINE Notify access token', type: 'password' }],
+  },
+  email: {
+    label: 'Email',
+    icon: 'M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z',
+    fields: [
+      { key: 'to_emails', label: 'Recipients (comma-separated)', placeholder: 'team@company.com, manager@company.com', type: 'text' },
+      { key: 'smtp_host', label: 'SMTP Host', placeholder: 'smtp.gmail.com', type: 'text' },
+      { key: 'smtp_port', label: 'SMTP Port', placeholder: '587', type: 'text' },
+      { key: 'smtp_user', label: 'SMTP Username', placeholder: 'support@company.com', type: 'text' },
+      { key: 'smtp_pass', label: 'SMTP Password', placeholder: '••••••••', type: 'password' },
+    ],
+  },
+  notion: {
+    label: 'Notion',
+    icon: 'M4 4h16v16H4V4zm2 4v8h12V8H6zm2 2h8v1H8v-1zm0 3h8v1H8v-1z',
+    fields: [
+      { key: 'token', label: 'Integration Token', placeholder: 'secret_…', type: 'password' },
+      { key: 'page_id', label: 'Page ID', placeholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', type: 'text' },
+    ],
+  },
+  confluence: {
+    label: 'Confluence',
+    icon: 'M2.654 18.522c-.384.627-.808 1.352-.808 1.352s2.748 1.652 5.6 1.652c3.176 0 5.6-1.652 5.6-1.652s-.427-.725-.808-1.352c-.46-.752-1.172-1.352-2.028-1.352H4.682c-.856 0-1.568.6-2.028 1.352zM12 2C7.352 2 4 5.02 4 8.5c0 2.3 1.4 4.35 3.5 5.5L12 22l4.5-8c2.1-1.15 3.5-3.2 3.5-5.5C20 5.02 16.648 2 12 2z',
+    fields: [
+      { key: 'site_url', label: 'Site URL', placeholder: 'https://yourcompany.atlassian.net', type: 'url' },
+      { key: 'email', label: 'Atlassian Email', placeholder: 'you@company.com', type: 'text' },
+      { key: 'api_token', label: 'API Token', placeholder: 'API token from id.atlassian.com', type: 'password' },
+      { key: 'space_key', label: 'Space Key', placeholder: 'CS', type: 'text' },
+      { key: 'page_title', label: 'Page Title', placeholder: 'CS Bot Reports', type: 'text' },
+    ],
+  },
+};
+
+interface ChannelField {
+  key: string;
+  label: string;
+  placeholder: string;
+  type: 'text' | 'url' | 'password';
+}
+
+type ChannelKey = keyof typeof CHANNEL_META;
+
+function NotificationsTab() {
+  const { toast } = useToast();
+  const [configs, setConfigs] = useState<Record<string, NotificationChannelConfig>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+  const [testing, setTesting] = useState<Record<string, 'daily' | 'weekly' | null>>({});
+  // track which channels were originally saved (have DB data)
+  const [savedChannels, setSavedChannels] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    api.getNotificationChannels().then(list => {
+      const map: Record<string, NotificationChannelConfig> = {};
+      const dbChannels = new Set<string>();
+      for (const ch of list) {
+        map[ch.channel] = ch;
+        if (ch.updated_at) dbChannels.add(ch.channel);
+      }
+      for (const key of Object.keys(CHANNEL_META)) {
+        if (!map[key]) map[key] = { channel: key, enabled: false, config: {}, reports: { daily: true, weekly: true } };
+      }
+      setConfigs(map);
+      setSavedChannels(dbChannels);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  const update = (channel: string, patch: Partial<NotificationChannelConfig>) => {
+    setConfigs(prev => {
+      const existing = prev[channel] ?? { channel, enabled: false, config: {}, reports: { daily: true, weekly: true } };
+      return { ...prev, [channel]: { ...existing, ...patch } };
+    });
+  };
+
+  const updateField = (channel: string, key: string, value: string) => {
+    setConfigs(prev => {
+      const existing = prev[channel] ?? { channel, enabled: false, config: {}, reports: { daily: true, weekly: true } };
+      return { ...prev, [channel]: { ...existing, config: { ...existing.config, [key]: value } } };
+    });
+  };
+
+  const disconnect = async (channel: string) => {
+    setSaving(prev => ({ ...prev, [channel]: true }));
+    try {
+      await api.saveNotificationChannel(channel, { enabled: false, config: {}, reports: { daily: true, weekly: true } });
+      setConfigs(prev => ({ ...prev, [channel]: { channel, enabled: false, config: {}, reports: { daily: true, weekly: true } } }));
+      setSavedChannels(prev => { const s = new Set(prev); s.delete(channel); return s; });
+      toast(`${CHANNEL_META[channel]?.label ?? channel} disconnected`, 'success');
+    } catch {
+      toast('Failed to disconnect', 'error');
+    } finally {
+      setSaving(prev => ({ ...prev, [channel]: false }));
+    }
+  };
+
+  const save = async (channel: string) => {
+    const cfg = configs[channel];
+    setSaving(prev => ({ ...prev, [channel]: true }));
+    try {
+      const updated = await api.saveNotificationChannel(channel, {
+        enabled: cfg.enabled,
+        config: cfg.config,
+        reports: cfg.reports,
+      });
+      setConfigs(prev => ({ ...prev, [channel]: updated }));
+      setSavedChannels(prev => new Set([...prev, channel]));
+      toast(`${CHANNEL_META[channel]?.label ?? channel} settings saved`, 'success');
+    } catch {
+      toast('Failed to save — please try again', 'error');
+    } finally {
+      setSaving(prev => ({ ...prev, [channel]: false }));
+    }
+  };
+
+  const runTest = async (channel: string, reportType: 'daily' | 'weekly') => {
+    const cfg = configs[channel];
+    setTesting(prev => ({ ...prev, [channel]: reportType }));
+    try {
+      await api.testNotificationChannel(channel, cfg.config, reportType);
+      toast(`${reportType.charAt(0).toUpperCase() + reportType.slice(1)} test sent to ${CHANNEL_META[channel]?.label ?? channel}`, 'success');
+    } catch {
+      toast('Delivery failed — check your credentials', 'error');
+    } finally {
+      setTesting(prev => ({ ...prev, [channel]: null }));
+    }
+  };
+
+  if (loading) return <div className="flex items-center justify-center py-16"><Spinner /></div>;
+
+  return (
+    <div className="space-y-4">
+      {(Object.keys(CHANNEL_META) as ChannelKey[]).map(key => {
+        const meta = CHANNEL_META[key];
+        const cfg = configs[key] ?? { channel: key, enabled: false, config: {}, reports: { daily: true, weekly: true } };
+        const isSaving = saving[key] ?? false;
+        const testingType = testing[key] ?? null;
+        const isConnected = savedChannels.has(key) && Object.values(cfg.config).some(Boolean);
+
+        // Build a summary of connected credentials (mask sensitive values)
+        const connectedSummary = isConnected ? meta.fields
+          .filter(f => cfg.config[f.key])
+          .map(f => {
+            const val = cfg.config[f.key];
+            if (f.type === 'password') return `${f.label}: ••••••••`;
+            if (f.key === 'webhook_url' || f.key === 'token') {
+              return `${f.label}: ${val.slice(0, 28)}…`;
+            }
+            return `${f.label}: ${val}`;
+          }) : [];
+
+        return (
+          <div key={key} className="bg-surface-1 ring-1 ring-surface-5 rounded-lg p-5">
+            {/* Header row */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${isConnected ? 'bg-green-500/10' : 'bg-surface-3'}`}>
+                  <svg className={`w-4 h-4 ${isConnected ? 'text-green-500' : 'text-text-secondary'}`} fill="currentColor" viewBox="0 0 24 24">
+                    <path d={meta.icon} />
+                  </svg>
+                </div>
+                <div>
+                  <span className="text-sm font-semibold text-text-primary">{meta.label}</span>
+                  {isConnected && <span className="ml-2 text-[10px] bg-green-500/10 text-green-500 px-1.5 py-0.5 rounded font-medium">Connected</span>}
+                </div>
+              </div>
+              {/* Enable toggle */}
+              <button
+                onClick={() => update(key, { enabled: !cfg.enabled })}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${cfg.enabled ? 'bg-brand' : 'bg-surface-5'}`}
+                aria-label={cfg.enabled ? 'Disable' : 'Enable'}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${cfg.enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            {/* Connected summary */}
+            {isConnected && connectedSummary.length > 0 && (
+              <div className="mb-4 bg-surface-2 ring-1 ring-surface-5 rounded-md px-3 py-2.5 space-y-1">
+                {connectedSummary.map((line, i) => (
+                  <p key={i} className="text-xs text-text-secondary font-mono">{line}</p>
+                ))}
+                <button
+                  onClick={() => disconnect(key)}
+                  disabled={isSaving}
+                  className="mt-1.5 text-xs text-red-500 hover:text-red-400 transition-colors disabled:opacity-40"
+                >
+                  Remove connection
+                </button>
+              </div>
+            )}
+
+            {/* Credential fields */}
+            <div className="space-y-3 mb-4">
+              {meta.fields.map(field => (
+                <div key={field.key}>
+                  <label className="block text-xs font-medium text-text-secondary mb-1">{field.label}</label>
+                  <input
+                    type={field.type}
+                    value={cfg.config[field.key] ?? ''}
+                    onChange={e => updateField(key, field.key, e.target.value)}
+                    placeholder={field.placeholder}
+                    className="w-full text-xs bg-surface-0 border border-surface-5 rounded-md px-3 py-1.5 text-text-primary placeholder-text-muted focus:outline-none focus:ring-1 focus:ring-brand"
+                  />
+                </div>
+              ))}
+            </div>
+
+            {/* Report type toggles */}
+            <div className="flex items-center gap-4 mb-4">
+              <span className="text-xs text-text-secondary">Reports:</span>
+              {(['daily', 'weekly'] as const).map(rtype => (
+                <label key={rtype} className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cfg.reports[rtype] ?? true}
+                    onChange={e => update(key, { reports: { ...cfg.reports, [rtype]: e.target.checked } })}
+                    className="w-3.5 h-3.5 accent-brand rounded"
+                  />
+                  <span className="text-xs text-text-primary capitalize">{rtype}</span>
+                </label>
+              ))}
+            </div>
+
+            {/* Actions row */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {(['daily', 'weekly'] as const).map(rtype => (
+                <button
+                  key={rtype}
+                  onClick={() => runTest(key, rtype)}
+                  disabled={!!testingType || !Object.values(cfg.config).some(Boolean)}
+                  className="text-xs px-3 py-1.5 rounded-md border border-surface-5 text-text-secondary hover:text-text-primary hover:border-surface-7 transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  {testingType === rtype ? <><Spinner size="xs" /> Sending…</> : `Test ${rtype}`}
+                </button>
+              ))}
+              <div className="flex-1" />
+              <button
+                onClick={() => save(key)}
+                disabled={isSaving}
+                className="text-xs px-4 py-1.5 bg-brand hover:bg-brand-dim text-white rounded-md transition-colors disabled:opacity-40 flex items-center gap-1.5"
+              >
+                {isSaving ? <><Spinner size="xs" /> Saving…</> : 'Save'}
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

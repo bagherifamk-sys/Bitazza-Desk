@@ -13,7 +13,10 @@ let io; // set by init()
 function init(httpServer) {
   const { Server } = require('socket.io');
   io = new Server(httpServer, {
-    cors: { origin: process.env.FRONTEND_URL || 'http://localhost:3001', credentials: true },
+    cors: {
+      origin: (process.env.FRONTEND_URL || 'http://localhost:3001').split(',').map(s => s.trim()),
+      credentials: true,
+    },
     pingInterval: 10_000,
     pingTimeout: 5_000,
   });

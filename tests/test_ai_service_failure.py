@@ -283,7 +283,7 @@ class TestAgentChatAIFailure:
         mock_client.models.generate_content.side_effect = RuntimeError("Connection reset")
 
         from engine.agent import chat
-        result = chat("conv-1", "user-1", "I need help with my KYC", category="other")
+        result = chat("conv-1", "user-1", "I need help navigating the app", category="other")
 
         assert result.escalated is True
 
@@ -317,7 +317,7 @@ class TestAgentChatAIFailure:
         ]
 
         from engine.agent import chat
-        result = chat("conv-1", "user-1", "What is my KYC status?", category="other")
+        result = chat("conv-1", "user-1", "How do I navigate the app?", category="other")
 
         assert result.escalated is False
         assert "KYC is approved" in result.text

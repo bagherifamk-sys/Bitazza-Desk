@@ -34,7 +34,7 @@ def _patch_all():
         patch("engine.agent.retrieve_with_fallback", return_value=[]),
         patch("engine.agent.get_ticket_id_by_conversation", return_value="ticket-1"),
         patch("engine.agent.update_ticket_status"),
-        patch("engine.agent.has_successful_bot_reply", return_value=True),
+        patch("engine.agent.has_successful_bot_reply", return_value=True, create=True),
         patch("engine.agent.update_customer_from_profile"),
     )
 
@@ -71,8 +71,8 @@ class TestDefaultWorkflowOutputEquivalence:
              patch("engine.agent.retrieve_with_fallback", return_value=[]), \
              patch("engine.agent.get_ticket_id_by_conversation", return_value="t1"), \
              patch("engine.agent.update_ticket_status"), \
-             patch("engine.agent.has_successful_bot_reply", return_value=True), \
-             patch("engine.agent.update_customer_from_profile"):
+             patch("db.conversation_store.has_successful_bot_reply", return_value=True), \
+             patch("engine.agent.update_customer_from_profile", create=True):
 
             mock_client.models.generate_content.return_value = _gemini_resp(payload)
             legacy_result = chat("conv-1", "user-1", message, category=category)
@@ -118,7 +118,7 @@ class TestDefaultWorkflowOutputEquivalence:
              patch("engine.agent.retrieve_with_fallback", return_value=[]), \
              patch("engine.agent.get_ticket_id_by_conversation", return_value="t1"), \
              patch("engine.agent.update_ticket_status"), \
-             patch("engine.agent.has_successful_bot_reply", return_value=True), \
+             patch("engine.agent.has_successful_bot_reply", return_value=True, create=True), \
              patch("engine.agent.update_customer_from_profile"):
 
             # No function call in response

@@ -201,6 +201,8 @@ export default function ChatWindow({ cfg, onClose }: Props) {
         if (tickets.length > 0) {
           setPrevTickets(tickets);
           setShowPrevTickets(true);
+          // Scroll after React has painted the PrevConversations block at the top
+          setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 0);
         }
       });
     }
@@ -258,13 +260,17 @@ export default function ChatWindow({ cfg, onClose }: Props) {
     if (getStoredCustomerId()) {
       fetchOpenTicket(cfg).then((ticket) => {
         if (!ticket) {
-          setMessages((prev) => [...prev, {
-            id: 'category-prompt',
-            role: 'assistant',
-            content: CATEGORY_PROMPT[selected],
-            timestamp: Date.now(),
-            senderName: 'Bitazza Support',
-          }]);
+          setMessages((prev) => {
+            // User may have already picked a category while fetchOpenTicket was in-flight — don't append after their bubble
+            if (prev.some((m) => m.role === 'user')) return prev;
+            return [...prev, {
+              id: 'category-prompt',
+              role: 'assistant',
+              content: CATEGORY_PROMPT[selected],
+              timestamp: Date.now(),
+              senderName: 'Bitazza Support',
+            }];
+          });
           return;
         }
         // Verify the ticket actually has messages before showing the resume banner.
@@ -275,13 +281,16 @@ export default function ChatWindow({ cfg, onClose }: Props) {
             setOpenTicket(ticket);
             setShowOpenTicketBanner(true);
           } else {
-            setMessages((prev) => [...prev, {
-              id: 'category-prompt',
-              role: 'assistant',
-              content: CATEGORY_PROMPT[selected],
-              timestamp: Date.now(),
-              senderName: 'Bitazza Support',
-            }]);
+            setMessages((prev) => {
+              if (prev.some((m) => m.role === 'user')) return prev;
+              return [...prev, {
+                id: 'category-prompt',
+                role: 'assistant',
+                content: CATEGORY_PROMPT[selected],
+                timestamp: Date.now(),
+                senderName: 'Bitazza Support',
+              }];
+            });
           }
         });
       });

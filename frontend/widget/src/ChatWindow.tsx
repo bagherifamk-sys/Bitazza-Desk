@@ -256,23 +256,18 @@ export default function ChatWindow({ cfg, onClose }: Props) {
     setLang(selected);
     setLangSelected(true);
     storeSessionLang(selected);
+    // Always show the category prompt immediately in the selected language
+    setMessages((prev) => [...prev, {
+      id: 'category-prompt',
+      role: 'assistant',
+      content: CATEGORY_PROMPT[selected],
+      timestamp: Date.now(),
+      senderName: 'Bitazza Support',
+    }]);
     // Check for an open ticket from a previous session (only if customer_id is known)
     if (getStoredCustomerId()) {
       fetchOpenTicket(cfg).then((ticket) => {
-        if (!ticket) {
-          setMessages((prev) => {
-            // User may have already picked a category while fetchOpenTicket was in-flight — don't append after their bubble
-            if (prev.some((m) => m.role === 'user')) return prev;
-            return [...prev, {
-              id: 'category-prompt',
-              role: 'assistant',
-              content: CATEGORY_PROMPT[selected],
-              timestamp: Date.now(),
-              senderName: 'Bitazza Support',
-            }];
-          });
-          return;
-        }
+        if (!ticket) return;
         // Verify the ticket actually has messages before showing the resume banner.
         // A ticket can be "open" in the DB (created via dashboard/email) while having
         // zero messages in the widget conversation store — nothing to resume in that case.
@@ -280,28 +275,9 @@ export default function ChatWindow({ cfg, onClose }: Props) {
           if (history.length > 0) {
             setOpenTicket(ticket);
             setShowOpenTicketBanner(true);
-          } else {
-            setMessages((prev) => {
-              if (prev.some((m) => m.role === 'user')) return prev;
-              return [...prev, {
-                id: 'category-prompt',
-                role: 'assistant',
-                content: CATEGORY_PROMPT[selected],
-                timestamp: Date.now(),
-                senderName: 'Bitazza Support',
-              }];
-            });
           }
         });
       });
-    } else {
-      setMessages((prev) => [...prev, {
-        id: 'category-prompt',
-        role: 'assistant',
-        content: CATEGORY_PROMPT[selected],
-        timestamp: Date.now(),
-        senderName: 'Bitazza Support',
-      }]);
     }
   }, [cfg]);
 

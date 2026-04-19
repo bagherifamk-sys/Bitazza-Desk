@@ -51,6 +51,17 @@ class AiReplyNode:
                 next_node_id=node.next_node_id,
             )
 
+        # ── Bot persona override ──────────────────────────────────────────────
+        # If the workflow designer pinned a specific bot to this node, assign it
+        # before the reply is generated so the correct name/avatar appear in the widget.
+        ai_persona = node.config.get("ai_persona")
+        if ai_persona and not ctx.dry_run:
+            from engine.mock_agents import AGENTS
+            from db.conversation_store import assign_ai_persona
+            agent = next((a for a in AGENTS if a["name"] == ai_persona), None)
+            if agent:
+                assign_ai_persona(ctx.conversation_id, agent["name"], agent["avatar"], agent["avatar_url"])
+
         # ── Delegate to engine ────────────────────────────────────────────────
         response = engine_chat(
             conversation_id=ctx.conversation_id,
@@ -59,6 +70,9 @@ class AiReplyNode:
             platform=channel,
             category=category,
             consecutive_low_confidence=ctx.variables.get("consecutive_low_confidence", 0),
+            # Workflow owns escalation routing — suppress the "connecting you with a specialist"
+            # sentence so the Escalate node sends it instead of the AI reply.
+            suppress_handoff=True,
         )
 
         # ── Compliance post-filter (mandatory, not bypassable) ────────────────

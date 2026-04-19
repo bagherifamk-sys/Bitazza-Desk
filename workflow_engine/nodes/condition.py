@@ -1,9 +1,16 @@
 """
-condition node — evaluates a variable against a value and routes to
+condition node — evaluates variable(s) against value(s) and routes to
 true_next or false_next.
 
+Single condition (legacy):
+  config: { variable, operator, value, true_next, false_next }
+
+Compound conditions (new):
+  config: { logic: "AND"|"OR", conditions: [{variable, operator, value}, ...],
+            true_next, false_next }
+
 Operators: == != contains starts_with > <
-Missing variable always takes false_next.
+Missing variable always evaluates to False.
 """
 from __future__ import annotations
 import logging
@@ -12,12 +19,31 @@ from workflow_engine.models import WorkflowNode, ExecutionContext, NodeResult
 logger = logging.getLogger(__name__)
 
 
-def _evaluate(variable_value: str, operator: str, test_value: str) -> bool:
+def _resolve(variables: dict, path: str):
+    """Resolve a dot-notation path against the variables dict.
+    'account.status' → variables['account']['status']
+    Falls back to a flat key lookup for backwards compatibility.
+    """
+    if path in variables:
+        return variables[path]
+    parts = path.split(".")
+    val = variables
+    for part in parts:
+        if isinstance(val, dict) and part in val:
+            val = val[part]
+        else:
+            return None
+    return val
+
+
+def _evaluate_one(variable_value, operator: str, test_value: str) -> bool:
+    if variable_value is None:
+        return False
     try:
         if operator == "==":
-            return str(variable_value) == str(test_value)
+            return str(variable_value).lower() == str(test_value).lower()
         if operator == "!=":
-            return str(variable_value) != str(test_value)
+            return str(variable_value).lower() != str(test_value).lower()
         if operator == "contains":
             return str(test_value).lower() in str(variable_value).lower()
         if operator == "starts_with":
@@ -34,21 +60,47 @@ def _evaluate(variable_value: str, operator: str, test_value: str) -> bool:
 class ConditionNode:
 
     def run(self, node: WorkflowNode, ctx: ExecutionContext) -> NodeResult:
+        true_next  = node.config.get("true_next")
+        false_next = node.config.get("false_next")
+
+        # ── Compound conditions ───────────────────────────────────────────────
+        conditions = node.config.get("conditions")
+        if conditions and isinstance(conditions, list):
+            logic = node.config.get("logic", "AND").upper()
+            results = []
+            for clause in conditions:
+                var_path = clause.get("variable", "")
+                operator = clause.get("operator", "==")
+                value    = clause.get("value", "")
+                var_value = _resolve(ctx.variables, var_path)
+                results.append(_evaluate_one(var_value, operator, value))
+
+            if logic == "OR":
+                passed = any(results)
+            else:
+                passed = all(results)
+
+            branch  = "true" if passed else "false"
+            next_id = true_next if passed else false_next
+            return NodeResult(
+                output={"branch": branch, "next_node_id": next_id},
+                next_node_id=next_id,
+            )
+
+        # ── Single condition (legacy) ─────────────────────────────────────────
         variable  = node.config.get("variable", "")
         operator  = node.config.get("operator", "==")
         value     = node.config.get("value", "")
-        true_next = node.config.get("true_next")
-        false_next = node.config.get("false_next")
 
-        var_value = ctx.variables.get(variable)
+        var_value = _resolve(ctx.variables, variable)
         if var_value is None:
-            branch = "false"
+            branch  = "false"
             next_id = false_next
-        elif _evaluate(var_value, operator, value):
-            branch = "true"
+        elif _evaluate_one(var_value, operator, value):
+            branch  = "true"
             next_id = true_next
         else:
-            branch = "false"
+            branch  = "false"
             next_id = false_next
 
         return NodeResult(

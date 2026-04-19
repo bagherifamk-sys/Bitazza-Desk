@@ -84,6 +84,22 @@ def workflow_interceptor(
             metadata={},
         )
 
+    # If no category was sent (or "other"), ask Gemini what the message is about.
+    # This lets a published workflow fire even when the widget sends no category.
+    if not category or category.lower() == "other":
+        try:
+            from engine.mock_agents import classify_message_with_gemini
+            detected = classify_message_with_gemini(user_message)
+            if detected and detected != "other":
+                message.category = detected
+                logger.debug(
+                    "interceptor: category upgraded from %r to %r via Gemini",
+                    category,
+                    detected,
+                )
+        except Exception:
+            logger.debug("interceptor: Gemini classification failed — keeping 'other'")
+
     # Route
     router = WorkflowRouter()
     route_result = router.route(message)

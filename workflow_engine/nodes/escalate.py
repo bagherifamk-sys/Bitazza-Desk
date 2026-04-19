@@ -27,16 +27,27 @@ def update_ticket_status(ticket_id: str, status: str) -> None:
 class EscalateNode:
 
     def run(self, node: WorkflowNode, ctx: ExecutionContext) -> NodeResult:
-        channel = ctx.variables.get("channel", ctx.channel)
-        status  = "Escalated" if channel == "email" else "pending_human"
+        channel  = ctx.variables.get("channel", ctx.channel)
+        category = ctx.variables.get("category")
+        language = ctx.variables.get("language", "en")
+        status   = "Escalated" if channel == "email" else "pending_human"
 
         if not ctx.dry_run:
             ticket_id = get_ticket_id_by_conversation(ctx.conversation_id)
             if ticket_id:
                 update_ticket_status(ticket_id, status)
 
+        # Build specialist handoff message
+        from engine.prompt_templates import build_handoff_message
+        from engine.mock_agents import pick_agent, get_intro_message
+        handoff = build_handoff_message(category, language)
+        agent   = pick_agent(category)
+        intro   = get_intro_message(agent, language, category)
+        reply   = f"{handoff}\n\n{intro}"
+
         return NodeResult(
             output={
+                "reply":     reply,
                 "escalated": True,
                 "status":    status,
                 "team":      node.config.get("team", "cs"),

@@ -131,6 +131,14 @@ class WorkflowExecutionEngine:
         # Update variables with new message
         execution.variables.update(_build_builtin_vars(message))
 
+        # Advance past the paused wait_for_reply node so the next node runs.
+        # The wait node's current_node_id points to itself — move to next_node_id.
+        if execution.waiting_for == "message" and execution.current_node_id:
+            paused_node = workflow.get_node(execution.current_node_id)
+            if paused_node and paused_node.next_node_id:
+                execution.current_node_id = paused_node.next_node_id
+        execution.waiting_for = None
+
         # Option C: carry upgrade forward without terminating execution
         if category_upgrade:
             execution.variables["category"] = category_upgrade
@@ -198,11 +206,15 @@ class WorkflowExecutionEngine:
     ) -> WorkflowExecution:
         current_node_id = execution.current_node_id
 
+        escalate_node_ran = False
         while current_node_id:
             node = workflow.get_node(current_node_id)
             if node is None:
                 logger.error("Node %s not found in workflow %s", current_node_id, workflow.id)
                 break
+
+            if node.kind == "escalate":
+                escalate_node_ran = True
 
             ctx = ExecutionContext(
                 variables=dict(execution.variables),
@@ -212,7 +224,18 @@ class WorkflowExecutionEngine:
                 dry_run=False,
             )
 
-            result = self.run_node(node, ctx)
+            try:
+                result = self.run_node(node, ctx)
+            except Exception as node_exc:
+                if node.on_error_next_id:
+                    logger.warning(
+                        "Node %s (%s) raised — routing to error branch %s: %s",
+                        node.id, node.kind, node.on_error_next_id, node_exc,
+                    )
+                    execution.variables["_last_error"] = str(node_exc)
+                    current_node_id = node.on_error_next_id
+                    continue
+                raise
 
             # Merge node outputs into execution variables
             execution.variables.update(result.output)
@@ -238,6 +261,35 @@ class WorkflowExecutionEngine:
                 return execution
 
             current_node_id = result.next_node_id
+
+        # Safety net: if the ai_reply node triggered escalation but the workflow
+        # designer omitted an escalate node, still send the handoff message and
+        # update the ticket status so the conversation isn't silently dropped.
+        if execution.escalated and not escalate_node_ran:
+            try:
+                from engine.prompt_templates import build_handoff_message
+                from engine.mock_agents import pick_agent, get_intro_message
+                from db.conversation_store import (
+                    get_ticket_id_by_conversation,
+                    update_ticket_status,
+                )
+                category = execution.variables.get("category")
+                language = execution.variables.get("language", "en")
+                handoff  = build_handoff_message(category, language)
+                agent    = pick_agent(category)
+                intro    = get_intro_message(agent, language, category)
+                suffix   = f"\n\n{handoff}\n\n{intro}"
+                execution.output_reply = (execution.output_reply or "") + suffix
+                status = "Escalated" if execution.channel == "email" else "pending_human"
+                ticket_id = get_ticket_id_by_conversation(execution.conversation_id)
+                if ticket_id:
+                    update_ticket_status(ticket_id, status)
+                logger.warning(
+                    "Workflow %s escalated without an escalate node — safety net fired",
+                    execution.workflow_id,
+                )
+            except Exception:
+                logger.exception("Escalation safety net failed for execution %s", execution.id)
 
         # All nodes exhausted
         execution.status = ExecutionStatus.COMPLETED

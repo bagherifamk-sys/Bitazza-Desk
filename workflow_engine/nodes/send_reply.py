@@ -17,10 +17,23 @@ logger = logging.getLogger(__name__)
 
 
 def _interpolate(text: str, variables: dict) -> str:
-    """Replace {{variable_name}} with values from context variables."""
+    """Replace {{variable_name}} or {{dot.path}} with values from context variables."""
     def replacer(m):
-        key = m.group(1).strip()
-        return str(variables.get(key, m.group(0)))
+        path = m.group(1).strip()
+        # Try flat key first
+        if path in variables:
+            return str(variables[path])
+        # Walk dot-notation path: "account.status" → variables["account"]["status"]
+        parts = path.split(".")
+        val = variables
+        for part in parts:
+            if isinstance(val, dict):
+                val = val.get(part)
+            else:
+                return m.group(0)  # path broken — return original token
+            if val is None:
+                return m.group(0)
+        return str(val)
     return re.sub(r"\{\{([^}]+)\}\}", replacer, text)
 
 

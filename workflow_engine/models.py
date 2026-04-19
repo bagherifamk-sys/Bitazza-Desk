@@ -32,6 +32,7 @@ class WorkflowNode:
                        # "resolve_ticket" | "set_variable"
     config: dict[str, Any]
     next_node_id: str | None = None
+    on_error_next_id: str | None = None  # optional node to route to when this node raises
 
 
 @dataclass

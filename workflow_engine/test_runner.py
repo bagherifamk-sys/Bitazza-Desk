@@ -27,18 +27,23 @@ def build_dry_run_context(
     language: str,
     user_id: str = "test-user",
     conversation_id: str | None = None,
+    extra_variables: dict | None = None,
 ) -> ExecutionContext:
+    cid = conversation_id or str(uuid.uuid4())  # must be valid UUID for DB queries
+    variables = {
+        "language":        language,
+        "channel":         channel,
+        "category":        category,
+        "user_id":         user_id,
+        "conversation_id": cid,
+        "user_message":    sample_message,
+        "consecutive_low_confidence": 0,
+    }
+    if extra_variables:
+        variables.update(extra_variables)
     return ExecutionContext(
-        variables={
-            "language":        language,
-            "channel":         channel,
-            "category":        category,
-            "user_id":         user_id,
-            "conversation_id": conversation_id or f"dry-run-{uuid.uuid4().hex[:8]}",
-            "user_message":    sample_message,
-            "consecutive_low_confidence": 0,
-        },
-        conversation_id=conversation_id or f"dry-run-{uuid.uuid4().hex[:8]}",
+        variables=variables,
+        conversation_id=cid,
         user_id=user_id,
         channel=channel,
         dry_run=True,
@@ -51,6 +56,8 @@ def run_test_execution(
     channel: str,
     category: str,
     language: str,
+    user_id: str = "test-user",
+    extra_variables: dict | None = None,
 ) -> dict[str, Any]:
     """
     Execute a workflow in dry-run mode.
@@ -69,6 +76,8 @@ def run_test_execution(
         channel=channel,
         category=category,
         language=language,
+        user_id=user_id,
+        extra_variables=extra_variables,
     )
 
     steps: list[dict] = []
@@ -126,8 +135,22 @@ def run_test_execution(
     else:
         completed = True
 
+    # Build conversation preview (what the customer would actually see)
+    conversation: list[dict] = [{"role": "user", "text": sample_message}]
+    for step in steps:
+        out = step.get("output") or {}
+        if out.get("reply"):
+            conversation.append({"role": "bot", "text": out["reply"]})
+        if out.get("escalated"):
+            conversation.append({"role": "system", "text": "→ Escalated to human agent"})
+        elif out.get("resolved"):
+            conversation.append({"role": "system", "text": "✓ Ticket resolved"})
+        if step.get("paused"):
+            conversation.append({"role": "system", "text": "⏸ Waiting for customer reply"})
+
     return {
-        "steps":     steps,
-        "completed": completed,
-        "error":     error,
+        "steps":        steps,
+        "completed":    completed,
+        "error":        error,
+        "conversation": conversation,
     }

@@ -9,9 +9,21 @@ from workflow_engine.models import WorkflowNode, ExecutionContext, NodeResult
 
 
 def _interpolate(text: str, variables: dict) -> str:
+    """Replace {{variable_name}} or {{dot.path}} with values from context variables."""
     def replacer(m):
-        key = m.group(1).strip()
-        return str(variables.get(key, m.group(0)))
+        path = m.group(1).strip()
+        if path in variables:
+            return str(variables[path])
+        parts = path.split(".")
+        val = variables
+        for part in parts:
+            if isinstance(val, dict):
+                val = val.get(part)
+            else:
+                return m.group(0)
+            if val is None:
+                return m.group(0)
+        return str(val)
     return re.sub(r"\{\{([^}]+)\}\}", replacer, text)
 
 

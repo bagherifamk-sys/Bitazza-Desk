@@ -9,6 +9,7 @@ router.use(authenticate, requirePermission('admin.roles'));
 // ── Permission definitions ────────────────────────────────────────────────────
 // Full catalogue — ordered for UI grouping
 const ALL_PERMISSIONS = [
+  // Pages
   'section.home',
   'section.inbox',
   'section.supervisor',
@@ -18,29 +19,55 @@ const ALL_PERMISSIONS = [
   'section.knowledge',
   'section.users',
   'section.admin',
+  // User 360
   'user360.identity',
   'user360.kyc',
   'user360.restrictions',
   'user360.financials',
   'user360.tickets',
+  // Inbox / conversations
   'inbox.reply',
   'inbox.assign',
   'inbox.close',
   'inbox.escalate',
   'inbox.internal_note',
   'inbox.claim',
+  'inbox.set_priority',
+  'inbox.set_tags',
+  // Supervision
   'supervisor.whisper',
+  'supervisor.reassign',
+  // Bot Studio
+  'studio.create',
+  'studio.edit',
+  'studio.delete',
+  'studio.test',
   'studio.publish',
+  // Administration
   'admin.agents',
   'admin.roles',
-  'admin.settings',
+  'admin.tags',
+  'admin.canned_responses',
+  'admin.assignment_rules',
+  'admin.sla_targets',
+  'admin.bot_config',
+  'admin.report_settings',
+  // Knowledge base
+  'knowledge.read',
+  'knowledge.write',
 ];
 
 // Permissions admin role has — ceiling for admin callers
 const ADMIN_PERMISSIONS = new Set([
-  'section.home', 'section.inbox', 'section.supervisor', 'section.analytics', 'section.knowledge', 'section.users', 'section.admin',
+  'section.home', 'section.inbox', 'section.supervisor', 'section.analytics', 'section.metrics',
+  'section.studio', 'section.knowledge', 'section.users', 'section.admin',
   'inbox.reply', 'inbox.assign', 'inbox.close', 'inbox.escalate', 'inbox.internal_note', 'inbox.claim',
-  'admin.agents', 'admin.roles', 'admin.settings',
+  'inbox.set_priority', 'inbox.set_tags',
+  'supervisor.whisper', 'supervisor.reassign',
+  'studio.create', 'studio.edit', 'studio.delete', 'studio.test', 'studio.publish',
+  'admin.agents', 'admin.roles', 'admin.tags', 'admin.canned_responses', 'admin.assignment_rules',
+  'admin.sla_targets', 'admin.bot_config', 'admin.report_settings',
+  'knowledge.read', 'knowledge.write',
   'user360.identity', 'user360.kyc', 'user360.restrictions', 'user360.financials', 'user360.tickets',
 ]);
 

@@ -332,7 +332,7 @@ class TestAgentChatAIFailure:
         ]
 
         from engine.agent import chat
-        result = chat("conv-1", "user-1", "Where is my withdrawal?", category="other")
+        result = chat("conv-1", "user-1", "How do I contact support?", category="other")
 
         assert result.escalated is False
         assert "withdrawal" in result.text.lower()

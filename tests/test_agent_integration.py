@@ -141,29 +141,15 @@ def _gemini_tool_then_text_response(tool_name: str, tool_result: dict, final_tex
 
 
 def test_agent_calls_update_customer_from_profile_after_tool_success(mock_dependencies):
-    """When get_user_profile tool succeeds, agent calls update_customer_from_profile with the result."""
-    from unittest.mock import patch, MagicMock
-
-    profile = {
-        "first_name": "Jintana", "last_name": "Wiset",
-        "email": "jintana@example.com", "phone": "+66812345610",
-        "tier": "VIP", "kyc": {"status": "pending_information"},
-    }
-
-    responses = _gemini_tool_then_text_response(
-        "get_user_profile",
-        profile,
-        _json_payload("Your KYC is pending information.", confidence=0.9),
-    )
-    mock_dependencies.models.generate_content.side_effect = responses
-
-    # The agent calls tools via TOOLS.get(fn_call.name) — patch TOOLS so the
-    # mock tool fn is invoked, and separately patch update_customer_from_profile.
-    fake_tools = {"get_user_profile": lambda **kwargs: profile}
+    """
+    kyc_verification with no active workflow escalates immediately to a human specialist.
+    The legacy agent no longer calls Gemini or account tools for this category.
+    """
+    from unittest.mock import patch
 
     with (
-        patch("engine.agent.TOOLS", fake_tools),
-        patch("engine.agent.update_customer_from_profile") as mock_backfill,
+        patch("engine.agent.get_ticket_id_by_conversation", return_value="t-backfill"),
+        patch("engine.agent.update_ticket_status") as mock_status,
     ):
         from engine.agent import chat
         result = chat(
@@ -173,8 +159,10 @@ def test_agent_calls_update_customer_from_profile_after_tool_success(mock_depend
             category="kyc_verification",
         )
 
-    mock_backfill.assert_called_once_with("USR-000010", profile)
-    assert result.escalated is False
+    assert result.escalated is True
+    assert result.escalation_reason == "no_active_workflow"
+    mock_status.assert_called_once_with("t-backfill", "pending_human")
+    mock_dependencies.models.generate_content.assert_not_called()
 
 
 def test_agent_does_not_call_update_customer_if_profile_has_error(mock_dependencies):

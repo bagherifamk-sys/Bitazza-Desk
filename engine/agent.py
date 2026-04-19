@@ -170,7 +170,8 @@ def chat(
     if category in _ACCOUNT_CATEGORIES:
         ticket_id = get_ticket_id_by_conversation(conversation_id)
         if ticket_id:
-            update_ticket_status(ticket_id, "pending_human")
+            _escalation_status = "Escalated" if platform == "email" else "pending_human"
+            update_ticket_status(ticket_id, _escalation_status)
         return AgentResponse(
             text=build_handoff_message(category, language),
             language=language,

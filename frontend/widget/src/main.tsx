@@ -45,7 +45,7 @@ async function getDevToken(apiUrl: string): Promise<string> {
 async function mount() {
   const rawCfg: CSBotConfig = (window as any).CSBotConfig ?? {
     platform: 'web',
-    apiUrl: 'http://localhost:8000',
+    apiUrl: 'https://csbot-api-production.up.railway.app',
   };
 
   // Inject a mock token when running in dev without a real JWT

@@ -429,7 +429,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/insights',   label: 'Insights',   icon: Icons.insights,   permission: 'section.analytics',  shortcut: '⌘4' },
   { to: '/knowledge',  label: 'Knowledge Base',  icon: Icons.knowledge,  permission: 'section.knowledge' },
   { to: '/users',      label: 'User360',    icon: Icons.users,      permission: 'section.users' },
-  { to: '/studio',     label: 'AI Studio',  icon: Icons.studio,     permission: 'section.studio' },
+  { to: '/studio',     label: 'Workflow Studio',  icon: Icons.studio,     permission: 'section.studio' },
   { to: '/admin',      label: 'Admin',      icon: Icons.admin,      permission: 'section.admin' },
 ];
 
@@ -440,7 +440,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/insights':   'Insights',
   '/knowledge':  'Knowledge Base',
   '/users':      'User360',
-  '/studio':     'AI Studio',
+  '/studio':     'Workflow Studio',
   '/admin':      'Admin',
 };
 
@@ -816,6 +816,7 @@ export default function App() {
 
   // Load real agent status from DB on mount
   useEffect(() => {
+    if (!user) return;
     api.getAgents().then(agents => {
       const me = agents.find(a => a.id === user?.id);
       if (me) setMyStatus((me.state ?? me.status ?? 'Available') as AgentStatus);

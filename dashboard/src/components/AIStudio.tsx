@@ -1953,7 +1953,7 @@ export default function AIStudio() {
         {noWorkflowLoaded ? (
           <div className="flex-1 flex items-center justify-center flex-col gap-6 px-8 py-10 overflow-y-auto">
             <div className="text-center">
-              <p className="text-base font-semibold text-text-primary">{canCreate ? 'Start with a template' : 'Bot Studio'}</p>
+              <p className="text-base font-semibold text-text-primary">{canCreate ? 'Start with a template' : 'Workflow Studio'}</p>
               <p className="text-xs text-text-muted mt-1">{canCreate ? 'Pick a pre-built flow or start from scratch' : 'Select a workflow from the list to view it.'}</p>
             </div>
             {canCreate && <div className="grid grid-cols-3 gap-4 w-full max-w-2xl">

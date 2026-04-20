@@ -92,7 +92,7 @@ export default function AdminSettings({ currentUser }: Props) {
           {tab === 'Canned Responses' && <CannedResponsesTab />}
           {tab === 'Assignment Rules' && <AssignmentRulesTab />}
           {tab === 'SLA Targets'      && <StubTab label="SLA Targets" description="Set SLA response and resolution time targets per tier: VIP 1 min · EA 3 min · Standard 10 min." />}
-          {tab === 'Bot Config'       && <StubTab label="Bot Config" description="Configure bot persona, greeting, fallback message, and business hours. Use AI Studio for flow editing." />}
+          {tab === 'Bot Config'       && <StubTab label="Bot Config" description="Configure bot persona, greeting, fallback message, and business hours. Use Workflow Studio for flow editing." />}
           {tab === 'Report Settings'  && <NotificationsTab />}
         </div>
       </div>
@@ -430,7 +430,7 @@ const PERM_LABELS: Record<string, string> = {
   'section.supervisor':     'Live Monitor',
   'section.analytics':      'Analytics',
   'section.metrics':        'Metrics',
-  'section.studio':         'Bot Studio',
+  'section.studio':         'Workflow Studio',
   'section.admin':          'Admin Panel',
   'section.knowledge':      'Knowledge Base',
   'inbox.reply':            'Reply to Customer',
@@ -464,7 +464,7 @@ const PERM_GROUPS: { label: string; description: string; perms: string[] }[] = [
   { label: 'Pages',          description: 'Which sections this role can access',        perms: ['section.home','section.inbox','section.supervisor','section.analytics','section.metrics','section.studio','section.admin','section.knowledge'] },
   { label: 'Conversations',  description: 'Actions available inside conversations',     perms: ['inbox.reply','inbox.assign','inbox.close','inbox.claim','inbox.escalate','inbox.internal_note','inbox.set_priority','inbox.set_tags'] },
   { label: 'Supervision',    description: 'Real-time team monitoring tools',            perms: ['supervisor.whisper','supervisor.reassign'] },
-  { label: 'Bot Studio',     description: 'Build and deploy automated flows',           perms: ['studio.create','studio.edit','studio.delete','studio.test','studio.publish'] },
+  { label: 'Workflow Studio', description: 'Build and deploy automated flows',           perms: ['studio.create','studio.edit','studio.delete','studio.test','studio.publish'] },
   { label: 'Administration', description: 'Workspace configuration and user management', perms: ['admin.agents','admin.roles','admin.tags','admin.canned_responses','admin.assignment_rules','admin.sla_targets','admin.bot_config','admin.report_settings'] },
   { label: 'Knowledge Base', description: 'Access and manage knowledge articles',       perms: ['knowledge.read','knowledge.write'] },
 ];

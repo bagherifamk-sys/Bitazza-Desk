@@ -26,7 +26,6 @@ from db.conversation_store import (
 )
 from api.ws_manager import manager
 from api.copilot import suggest_reply, summarize_conversation, classify_sentiment, find_related_tickets
-from engine.notifications import create_notification, fan_out_to_supervisors
 # USERS_BY_ID is kept for legacy imports but is always empty; agent info is fetched from DB instead
 # from api.routes.auth import USERS_BY_ID  # reverted if needed
 
@@ -299,16 +298,6 @@ async def update_status(ticket_id: str, body: StatusRequest, user_id: str = Depe
         "conversation_id": ticket_id,
         "status": body.status,
     })
-    # Notify supervisors when a ticket is escalated
-    if body.status == "Escalated":
-        for notif in fan_out_to_supervisors(
-            type="escalated",
-            priority="high",
-            title=f"Ticket #{ticket_id[:8]} escalated",
-            body=f"Escalated by agent {user_id}",
-            ticket_id=ticket_id,
-        ):
-            await manager.broadcast_all({"type": "notification:new", "notification": notif})
     return {"status": body.status}
 
 
@@ -336,19 +325,6 @@ async def assign_ticket(ticket_id: str, body: AssignRequest, user_id: str = Depe
         "agent_id": target_agent,
         "agent_name": next((a["name"] for a in MOCK_AGENTS if a["id"] == target_agent), target_agent),
     })
-    # Notify the assigned agent
-    if target_agent:
-        customer_name = ticket.get("customer_name") or ticket.get("customer", {}).get("name") if isinstance(ticket, dict) else None
-        notif = create_notification(
-            user_id=target_agent,
-            role="agent",
-            type="assigned",
-            priority="medium",
-            title=f"Ticket #{ticket_id[:8]} assigned to you",
-            body=f"From {customer_name or 'a customer'} — {ticket.get('channel', 'web')} channel",
-            ticket_id=ticket_id,
-        )
-        await manager.broadcast_all({"type": "notification:new", "notification": notif})
     return {"status": "assigned", "agent_id": target_agent}
 
 
@@ -369,15 +345,6 @@ async def escalate_ticket(ticket_id: str, user_id: str = Depends(get_user_id)):
         "conversation_id": ticket_id,
         "status": "Escalated",
     })
-    customer_name = ticket.get("customer_name") or (ticket.get("customer") or {}).get("name") if isinstance(ticket, dict) else None
-    for notif in fan_out_to_supervisors(
-        type="escalated",
-        priority="high",
-        title=f"Ticket #{ticket_id[:8]} escalated",
-        body=f"{customer_name or 'A customer'} — escalated by agent",
-        ticket_id=ticket_id,
-    ):
-        await manager.broadcast_all({"type": "notification:new", "notification": notif})
     return {"status": "escalated"}
 
 
@@ -1029,16 +996,6 @@ async def send_whisper(body: WhisperRequest, user_id: str = Depends(get_user_id)
         "content": body.content,
         "supervisor_name": supervisor_name,
     })
-    notif = create_notification(
-        user_id=body.target_agent_id,
-        role="agent",
-        type="whisper",
-        priority="info",
-        title=f"Coaching note from {supervisor_name}",
-        body=body.content[:120],
-        ticket_id=body.ticket_id,
-    )
-    await manager.broadcast_all({"type": "notification:new", "notification": notif})
     return {"status": "sent"}
 
 

@@ -845,6 +845,13 @@ export default function App() {
     api.getNotifications().then(setNotifications).catch(() => {});
   }, [user]);
 
+  // Handle token expiry without a hard browser reload
+  useEffect(() => {
+    const handler = () => { setAuthUser(null); setUser(null); sessionStorage.clear(); };
+    window.addEventListener('auth:expired', handler);
+    return () => window.removeEventListener('auth:expired', handler);
+  }, []);
+
   // Apply theme on mount and change
   useEffect(() => { applyTheme(theme); }, [theme]);
 

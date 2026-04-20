@@ -11,7 +11,7 @@ const VALID_RANGES   = ['today', '7d', '30d', 'custom'];
 // Returns a WHERE fragment (no alias) + params array
 function dateFilter(date_range, date_from, date_to) {
   switch (date_range) {
-    case 'today':  return { sql: `created_at >= NOW() - INTERVAL '1 day'`,   params: [] };
+    case 'today':  return { sql: `created_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Bangkok') AT TIME ZONE 'Asia/Bangkok'`, params: [] };
     case '30d':    return { sql: `created_at >= NOW() - INTERVAL '30 days'`, params: [] };
     case 'custom':
       if (date_from && date_to)

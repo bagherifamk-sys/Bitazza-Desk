@@ -13,16 +13,21 @@ import { EmptyState } from './ui/EmptyState';
 function fmtMins(mins: number | string | null | undefined): string {
   const n = Number(mins);
   if (!n || isNaN(n) || n < 0) return '—';
-  if (n < 60) return `${Math.round(n)}m`;
-  return `${Math.floor(n / 60)}h ${Math.round(n % 60)}m`;
+  const w = Math.floor(n / 10080);
+  const d = Math.floor((n % 10080) / 1440);
+  const h = Math.floor((n % 1440) / 60);
+  const m = Math.round(n % 60);
+  if (w > 0) return `${w}w ${d}d`;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }
 
 function fmtSeconds(s: number | string | null | undefined): string {
   const n = Number(s);
   if (!n || isNaN(n)) return '—';
   if (n < 60) return `${Math.round(n)}s`;
-  if (n < 3600) return `${Math.floor(n / 60)}m`;
-  return `${Math.floor(n / 3600)}h ${Math.floor((n % 3600) / 60)}m`;
+  return fmtMins(n / 60);
 }
 
 function minutesAgo(iso: string | null | undefined): number {
@@ -34,8 +39,7 @@ function fmtAgo(iso: string | null | undefined): string {
   const m = minutesAgo(iso);
   if (m === Infinity) return '—';
   if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  return `${Math.floor(m / 60)}h ${m % 60}m ago`;
+  return `${fmtMins(m)} ago`;
 }
 
 const STATE_DOT: Record<string, string> = {
@@ -440,6 +444,8 @@ export default function SupervisorDashboard() {
   const [agents, setAgents]               = useState<Agent[]>([]);
   const [queues, setQueues]               = useState<QueueItem[]>([]);
   const [slaRisk, setSlaRisk]             = useState<SLARiskTicket[]>([]);
+  const [slaBreachedCount, setSlaBreachedCount] = useState(0);
+  const [slaAtRiskCount, setSlaAtRiskCount]     = useState(0);
   const [stats, setStats]                 = useState<SupervisorStats | null>(null);
   const [channelHealth, setChannelHealth] = useState<ChannelHealth[]>([]);
   const [pendingStale, setPendingStale]   = useState<PendingStale[]>([]);
@@ -459,6 +465,8 @@ export default function SupervisorDashboard() {
       setAgents(data.agents ?? []);
       setQueues(data.queues ?? []);
       setSlaRisk(data.sla_risk ?? []);
+      setSlaBreachedCount(data.sla_breached_count ?? 0);
+      setSlaAtRiskCount(data.sla_at_risk_count ?? 0);
       setStats(data.stats ?? null);
       setChannelHealth(data.channel_health ?? []);
       setPendingStale(data.pending_stale ?? []);
@@ -479,7 +487,6 @@ export default function SupervisorDashboard() {
 
   // Derived signals
   const breached      = slaRisk.filter(t => t.sla_breached);
-  const atRisk        = slaRisk.filter(t => !t.sla_breached);
   const vipWaiting    = slaRisk.filter(t => t.tier === 'VIP' || t.tier === 'EA');
   const unassignedQ   = queues.reduce((s, q) => s + Number(q.count), 0);
   const idleAgents    = agents.filter(a => (a.state ?? a.status) === 'Available' && minutesAgo(a.last_activity_at) > 10);
@@ -496,7 +503,7 @@ export default function SupervisorDashboard() {
     return m < oldest ? m : oldest;
   }, Infinity);
 
-  const needsAttention = breached.length + atRisk.length + vipWaiting.length + pendingStale.length + idleAgents.length + stuckAgents.length;
+  const needsAttention = slaBreachedCount + slaAtRiskCount + vipWaiting.length + pendingStale.length + idleAgents.length + stuckAgents.length;
 
   return (
     <div className="flex-1 overflow-y-auto bg-surface-0">
@@ -547,17 +554,23 @@ export default function SupervisorDashboard() {
             </div>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <AttentionCard
-                count={breached.length}
+                count={slaBreachedCount}
                 label="SLA Breached"
-                sublabel={breached.length > 0 ? `oldest: ${breached[0].customer_name ?? 'ticket'}` : 'None right now'}
-                color={breached.length > 0 ? 'red' : 'muted'}
+                sublabel={slaBreachedCount > 0 ? `oldest: ${breached[0]?.customer_name ?? 'ticket'}` : 'None right now'}
+                color={slaBreachedCount > 0 ? 'red' : 'muted'}
                 onFix={() => slaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               />
               <AttentionCard
-                count={atRisk.length}
+                count={slaAtRiskCount}
                 label="SLA At Risk"
-                sublabel={atRisk.length > 0 ? `${unassignedQ} unassigned in queue` : 'All SLAs healthy'}
-                color={atRisk.length > 0 ? 'amber' : 'muted'}
+                sublabel={
+                  slaAtRiskCount > 0
+                    ? `${slaAtRiskCount} ticket${slaAtRiskCount > 1 ? 's' : ''} approaching deadline`
+                    : slaBreachedCount > 0
+                    ? `${slaBreachedCount} already breached`
+                    : 'All SLAs healthy'
+                }
+                color={slaAtRiskCount > 0 ? 'amber' : 'muted'}
                 onFix={() => slaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               />
               <AttentionCard
@@ -572,9 +585,9 @@ export default function SupervisorDashboard() {
                 label="Agents Need Check"
                 sublabel={
                   stuckAgents.length > 0
-                    ? `${stuckAgents.length} stuck 45m+`
+                    ? `${stuckAgents.length} agent${stuckAgents.length > 1 ? 's' : ''} have a ticket open 45m+`
                     : idleAgents.length > 0
-                    ? `${idleAgents.length} idle 10m+`
+                    ? `${idleAgents.length} available but no activity 10m+`
                     : 'Team flowing well'
                 }
                 color={(stuckAgents.length + idleAgents.length) > 0 ? 'amber' : 'muted'}
@@ -586,8 +599,12 @@ export default function SupervisorDashboard() {
 
         {/* ── Today's pulse — 2 lean stat rows ── */}
         {stats && !loading && (
-          <div className="bg-surface-2 ring-1 ring-surface-5 rounded-xl px-5 py-4">
-            <div className="grid grid-cols-4 lg:grid-cols-7 gap-x-0 divide-x divide-surface-5">
+          <div className="bg-surface-2 ring-1 ring-surface-5 rounded-xl">
+            <div className="px-5 py-3 border-b border-surface-5 flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wide">Today's Performance</h3>
+              <span className="text-[10px] text-text-muted">Since midnight Bangkok time</span>
+            </div>
+            <div className="px-5 py-4 grid grid-cols-4 lg:grid-cols-7 gap-x-0 divide-x divide-surface-5">
               {[
                 { label: 'Opened today',     val: String(stats.opened_today ?? '—') },
                 { label: 'Resolved today',   val: String(stats.resolved_today ?? '—'),   sub: stats.resolved_yesterday != null ? `${stats.resolved_yesterday} yesterday` : undefined },
@@ -665,7 +682,7 @@ export default function SupervisorDashboard() {
                         <span className="text-text-muted">queued</span>
                         {ch.oldest_queued_at && minutesAgo(ch.oldest_queued_at) > 0 && (
                           <span className={`ml-1 tabular-nums text-[10px] ${minutesAgo(ch.oldest_queued_at) > 15 ? 'text-brand' : 'text-text-muted'}`}>
-                            · oldest {minutesAgo(ch.oldest_queued_at)}m
+                            · oldest {fmtAgo(ch.oldest_queued_at)}
                           </span>
                         )}
                         <div className="ml-auto flex items-center gap-3">
@@ -712,7 +729,7 @@ export default function SupervisorDashboard() {
                           </span>
                           {q.oldest_at && mins !== Infinity && (
                             <span className={`text-[10px] tabular-nums ${urgent ? 'text-brand' : 'text-text-muted'}`}>
-                              oldest {mins}m
+                              oldest {fmtAgo(q.oldest_at)}
                             </span>
                           )}
                         </div>
@@ -756,7 +773,10 @@ export default function SupervisorDashboard() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            <SLATimer deadline={t.sla_deadline ?? ''} />
+                            {t.sla_deadline
+                              ? <SLATimer deadline={t.sla_deadline} />
+                              : <span className="text-xs text-text-muted tabular-nums">open {fmtAgo(t.created_at)}</span>
+                            }
                             <AssignDropdown ticketId={t.id} agents={agents} onAssigned={load} />
                           </div>
                         </div>
@@ -773,8 +793,8 @@ export default function SupervisorDashboard() {
                 <InterventionPanel title="Waiting on Customer" count={pendingStale.length} badgeColor="amber">
                   <div className="divide-y divide-surface-5 overflow-y-auto max-h-[200px] rounded-b-xl">
                     {pendingStale.map(t => {
-                      const mins = minutesAgo(t.last_customer_msg_at);
-                      const waitLabel = mins === Infinity ? '—' : `${mins}m`;
+                      const waitMins = minutesAgo(t.last_customer_msg_at ?? t.created_at);
+                      const waitLabel = waitMins === Infinity ? '—' : fmtMins(waitMins);
                       return (
                         <div key={t.id} className="flex items-center justify-between px-4 py-2.5 gap-2">
                           <div className="min-w-0 flex-1">
@@ -787,7 +807,7 @@ export default function SupervisorDashboard() {
                             <div className="text-[10px] text-text-muted truncate">{t.assigned_to_name ?? 'Unassigned'}</div>
                           </div>
                           <span className="text-[10px] text-accent-amber tabular-nums shrink-0">
-                            {waitLabel} waiting
+                            no reply: {waitLabel}
                           </span>
                         </div>
                       );

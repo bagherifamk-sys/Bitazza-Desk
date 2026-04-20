@@ -181,6 +181,8 @@ export const api = {
       agents: Agent[];
       queues: QueueItem[];
       sla_risk: SLARiskTicket[];
+      sla_breached_count: number;
+      sla_at_risk_count: number;
       stats: SupervisorStats;
       channel_health: ChannelHealth[];
       pending_stale: PendingStale[];

@@ -8,7 +8,7 @@ router.use(authenticate, requirePermission('section.supervisor'));
 
 router.get('/live', async (req, res) => {
   try {
-    const [agents, queues, slaRisk, stats, channelHealth, pendingStale] = await Promise.all([
+    const settled = await Promise.allSettled([
       // Agent grid — with last message activity and longest open ticket
       pool.query(`
         SELECT
@@ -33,36 +33,98 @@ router.get('/live', async (req, res) => {
         GROUP BY channel, priority
         ORDER BY priority ASC, channel ASC
       `),
-      // SLA at-risk (< 1h remaining)
+      // SLA at-risk — compute effective deadline from tier when sla_deadline is missing
       pool.query(`
-        SELECT t.id, t.priority, t.sla_deadline, t.sla_breached,
-               c.name AS customer_name, c.tier,
-               u.name AS assigned_to_name
-        FROM tickets t
-        LEFT JOIN customers c ON t.customer_id = c.id
-        LEFT JOIN users u ON t.assigned_to = u.id
-        WHERE t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')
-          AND t.sla_deadline < NOW() + INTERVAL '1 hour'
-        ORDER BY t.sla_deadline ASC
+        WITH sla_cfg AS (
+          SELECT
+            COALESCE((SELECT (value::jsonb)->>'1' FROM assignment_rules WHERE key='sla_minutes'),'1')::int  AS p1,
+            COALESCE((SELECT (value::jsonb)->>'2' FROM assignment_rules WHERE key='sla_minutes'),'3')::int  AS p2,
+            COALESCE((SELECT (value::jsonb)->>'3' FROM assignment_rules WHERE key='sla_minutes'),'10')::int AS p3
+        ),
+        tickets_with_sla AS (
+          SELECT t.*,
+            COALESCE(t.sla_deadline,
+              t.created_at + (
+                CASE t.priority
+                  WHEN 1 THEN (SELECT p1 FROM sla_cfg)
+                  WHEN 2 THEN (SELECT p2 FROM sla_cfg)
+                  ELSE         (SELECT p3 FROM sla_cfg)
+                END
+              ) * INTERVAL '1 minute'
+            ) AS effective_deadline,
+            CASE WHEN t.sla_deadline IS NULL AND
+              t.created_at + (
+                CASE t.priority
+                  WHEN 1 THEN (SELECT p1 FROM sla_cfg)
+                  WHEN 2 THEN (SELECT p2 FROM sla_cfg)
+                  ELSE         (SELECT p3 FROM sla_cfg)
+                END
+              ) * INTERVAL '1 minute' < NOW()
+            THEN true ELSE t.sla_breached END AS effective_breached
+          FROM tickets t
+          WHERE t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')
+        )
+        SELECT
+          tw.id, tw.created_at, tw.priority,
+          tw.effective_deadline AS sla_deadline,
+          tw.effective_breached AS sla_breached,
+          c.name AS customer_name, c.tier,
+          u.name AS assigned_to_name
+        FROM tickets_with_sla tw
+        LEFT JOIN customers c ON tw.customer_id = c.id
+        LEFT JOIN users u ON tw.assigned_to = u.id
+        WHERE tw.effective_deadline < NOW() + INTERVAL '1 hour'
+        ORDER BY tw.effective_breached ASC, tw.effective_deadline ASC
         LIMIT 20
       `),
-      // Today's stats — extended with resolution time, CSAT, yesterday delta, bot containment
+      // SLA counts — real totals (not capped by LIMIT)
       pool.query(`
+        WITH sla_cfg AS (
+          SELECT
+            COALESCE((SELECT (value::jsonb)->>'1' FROM assignment_rules WHERE key='sla_minutes'),'1')::int  AS p1,
+            COALESCE((SELECT (value::jsonb)->>'2' FROM assignment_rules WHERE key='sla_minutes'),'3')::int  AS p2,
+            COALESCE((SELECT (value::jsonb)->>'3' FROM assignment_rules WHERE key='sla_minutes'),'10')::int AS p3
+        )
         SELECT
-          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 day') AS opened_today,
-          COUNT(*) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at > NOW() - INTERVAL '1 day') AS resolved_today,
+          COUNT(*) FILTER (WHERE
+            COALESCE(t.sla_deadline, t.created_at + (CASE t.priority WHEN 1 THEN (SELECT p1 FROM sla_cfg) WHEN 2 THEN (SELECT p2 FROM sla_cfg) ELSE (SELECT p3 FROM sla_cfg) END) * INTERVAL '1 minute') < NOW()
+          ) AS sla_breached_count,
+          COUNT(*) FILTER (WHERE
+            COALESCE(t.sla_deadline, t.created_at + (CASE t.priority WHEN 1 THEN (SELECT p1 FROM sla_cfg) WHEN 2 THEN (SELECT p2 FROM sla_cfg) ELSE (SELECT p3 FROM sla_cfg) END) * INTERVAL '1 minute') BETWEEN NOW() AND NOW() + INTERVAL '1 hour'
+          ) AS sla_at_risk_count
+        FROM tickets t
+        WHERE t.status NOT IN ('Closed_Resolved','Closed_Unresponsive')
+      `),
+      // Today's stats — "today" = since Bangkok midnight (Asia/Bangkok, UTC+7)
+      pool.query(`
+        WITH bkk AS (
+          SELECT DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Bangkok') AT TIME ZONE 'Asia/Bangkok' AS today_start
+        )
+        SELECT
+          COUNT(*) FILTER (WHERE t.created_at >= (SELECT today_start FROM bkk)) AS opened_today,
+          COUNT(*) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND t.created_at >= (SELECT today_start FROM bkk)
+            AND t.updated_at >= (SELECT today_start FROM bkk)) AS resolved_today,
+          COUNT(*) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND t.created_at >= (SELECT today_start FROM bkk) - INTERVAL '1 day'
+            AND t.created_at < (SELECT today_start FROM bkk)
+            AND t.updated_at >= (SELECT today_start FROM bkk) - INTERVAL '1 day'
+            AND t.updated_at < (SELECT today_start FROM bkk)) AS resolved_yesterday,
           AVG(EXTRACT(EPOCH FROM (
             (SELECT created_at FROM messages WHERE ticket_id=t.id AND sender_type IN ('agent','bot') ORDER BY created_at ASC LIMIT 1)
             - t.created_at
-          ))) AS avg_first_response_s,
+          ))) FILTER (WHERE t.created_at >= (SELECT today_start FROM bkk)) AS avg_first_response_s,
+          AVG(EXTRACT(EPOCH FROM (t.updated_at - t.created_at))) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND t.created_at >= (SELECT today_start FROM bkk)
+            AND t.updated_at >= (SELECT today_start FROM bkk)) AS avg_resolution_s,
+          AVG(csat_score) FILTER (WHERE csat_score IS NOT NULL AND t.updated_at >= NOW() - INTERVAL '7 days') AS csat_avg,
           COUNT(*) FILTER (WHERE channel = 'web' AND status IN ('Open_Live','In_Progress')) AS bot_active,
-          AVG(EXTRACT(EPOCH FROM (updated_at - created_at))) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at > NOW() - INTERVAL '1 day') AS avg_resolution_s,
-          AVG(csat_score) FILTER (WHERE csat_score IS NOT NULL AND updated_at > NOW() - INTERVAL '7 days') AS csat_avg,
-          COUNT(*) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at BETWEEN NOW() - INTERVAL '2 days' AND NOW() - INTERVAL '1 day') AS resolved_yesterday,
-          COUNT(*) FILTER (WHERE channel='web' AND status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at > NOW() - INTERVAL '1 day' AND id NOT IN (SELECT DISTINCT ticket_id FROM messages WHERE sender_type IN ('agent') AND created_at > NOW() - INTERVAL '1 day')) AS bot_contained,
-          COUNT(*) FILTER (WHERE channel='web' AND status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at > NOW() - INTERVAL '1 day') AS bot_total
+          COUNT(*) FILTER (WHERE channel='web' AND status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND t.updated_at >= (SELECT today_start FROM bkk)
+            AND t.id NOT IN (SELECT DISTINCT ticket_id FROM messages WHERE sender_type = 'agent' AND created_at >= (SELECT today_start FROM bkk))) AS bot_contained,
+          COUNT(*) FILTER (WHERE channel='web' AND status IN ('Closed_Resolved','Closed_Unresponsive')
+            AND t.updated_at >= (SELECT today_start FROM bkk)) AS bot_total
         FROM tickets t
-        WHERE t.created_at > NOW() - INTERVAL '7 days'
       `),
       // Channel health — open counts, queue, SLA metrics per channel
       pool.query(`
@@ -71,7 +133,7 @@ router.get('/live', async (req, res) => {
           COUNT(*) FILTER (WHERE status IN ('Open_Live','In_Progress') AND assigned_to IS NULL) AS queued,
           MIN(created_at) FILTER (WHERE status IN ('Open_Live','In_Progress') AND assigned_to IS NULL) AS oldest_queued_at,
           COUNT(*) FILTER (WHERE sla_breached = true AND status NOT IN ('Closed_Resolved','Closed_Unresponsive')) AS sla_breached_count,
-          ROUND(100.0 * COUNT(*) FILTER (WHERE sla_breached = false AND status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at > NOW() - INTERVAL '1 day') / NULLIF(COUNT(*) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at > NOW() - INTERVAL '1 day'), 0), 1) AS sla_met_pct
+          ROUND(100.0 * COUNT(*) FILTER (WHERE sla_breached = false AND status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Bangkok') AT TIME ZONE 'Asia/Bangkok' AND created_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Bangkok') AT TIME ZONE 'Asia/Bangkok') / NULLIF(COUNT(*) FILTER (WHERE status IN ('Closed_Resolved','Closed_Unresponsive') AND updated_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Bangkok') AT TIME ZONE 'Asia/Bangkok' AND created_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Bangkok') AT TIME ZONE 'Asia/Bangkok'), 0), 1) AS sla_met_pct
         FROM tickets
         WHERE created_at > NOW() - INTERVAL '7 days'
         GROUP BY channel
@@ -79,7 +141,7 @@ router.get('/live', async (req, res) => {
       `),
       // Pending stale — waiting on customer > 2 hours
       pool.query(`
-        SELECT t.id, t.last_customer_msg_at, t.nudge_sent_at, t.sla_deadline,
+        SELECT t.id, t.created_at, t.last_customer_msg_at, t.nudge_sent_at, t.sla_deadline,
                c.name AS customer_name, c.tier,
                u.name AS assigned_to_name
         FROM tickets t
@@ -92,18 +154,30 @@ router.get('/live', async (req, res) => {
       `),
     ]);
 
+    const [agentsR, queuesR, slaRiskR, slaCountsR, statsR, channelHealthR, pendingStaleR] = settled;
+
+    // Log any partial failures but don't 500 — return what we have
+    settled.forEach((r, i) => {
+      if (r.status === 'rejected') console.error(`[supervisor] query[${i}] failed:`, r.reason?.message);
+    });
+
     const csQueueDepth = await getQueueDepth('cs').catch(() => 0);
 
+    const rows = (r) => (r.status === 'fulfilled' ? r.value.rows : []);
+    const row0 = (r) => (r.status === 'fulfilled' ? r.value.rows[0] : {});
+
     res.json({
-      agents: agents.rows,
-      queues: queues.rows,
-      sla_risk: slaRisk.rows,
+      agents:             rows(agentsR),
+      queues:             rows(queuesR),
+      sla_risk:           rows(slaRiskR),
+      sla_breached_count: Number(row0(slaCountsR)?.sla_breached_count ?? 0),
+      sla_at_risk_count:  Number(row0(slaCountsR)?.sla_at_risk_count  ?? 0),
       stats: {
-        ...stats.rows[0],
+        ...row0(statsR),
         queue_depth: csQueueDepth,
       },
-      channel_health: channelHealth.rows,
-      pending_stale: pendingStale.rows,
+      channel_health: rows(channelHealthR),
+      pending_stale:  rows(pendingStaleR),
     });
   } catch (err) {
     console.error('[supervisor] live error:', err.message);

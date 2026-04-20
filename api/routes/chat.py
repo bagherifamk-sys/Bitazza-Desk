@@ -71,7 +71,7 @@ async def start_conversation(body: StartRequest, user_id: str = Depends(get_user
     cid = create_conversation(user_id=user_id, platform=body.platform, issue_category=body.category)
     agent = pick_agent(body.category)
     assign_ai_persona(cid, agent["name"], agent["avatar"], agent["avatar_url"])
-    tid = create_ticket(cid, "ai_handling")
+    tid = create_ticket(cid, "unclassified")
     await manager.broadcast_all({
         "type": "new_ticket",
         "ticket": {

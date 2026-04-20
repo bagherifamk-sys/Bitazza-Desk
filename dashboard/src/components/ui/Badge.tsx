@@ -54,7 +54,7 @@ const CATEGORY_CONFIG: Record<TicketCategory, { label: string; bg: string; text:
     bg: 'bg-accent-amber/10', text: 'text-accent-amber',
     icon: 'M8 14V5.414l2.293 2.293a1 1 0 0 0 1.414-1.414l-3-3a1 1 0 0 0-1.414 0l-3 3a1 1 0 0 0 1.414 1.414L7 5.414V14a1 1 0 0 0 2 0ZM3 2a1 1 0 0 0 0 2h10a1 1 0 1 0 0-2H3Z',
   },
-  ai_handling: {
+  unclassified: {
     label: 'Unclassified',
     bg: 'bg-surface-4', text: 'text-text-secondary',
     icon: 'M9.5 1.5 8 5l-3.5 1.5L8 8l1.5 3.5L11 8l3.5-1.5L11 5 9.5 1.5ZM3 9.5 2 12l2.5 1L2 14.5 3 17l1-2.5 2.5-1L4 12l-1-2.5Z',

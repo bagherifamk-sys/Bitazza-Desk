@@ -268,7 +268,7 @@ def create_conversation(user_id: str, platform: str, language: str = "en", issue
         cur.execute("""
             INSERT INTO tickets (id, customer_id, channel, status, category, priority, team, sla_deadline)
             VALUES (%s, %s, 'web', 'Open_Live', %s, %s, %s, NOW() + %s * INTERVAL '1 minute')
-        """, (ticket_id, customer_id, issue_category or 'ai_handling', priority, team, sla_mins))
+        """, (ticket_id, customer_id, issue_category or 'unclassified', priority, team, sla_mins))
 
     return ticket_id  # ticket_id IS the conversation_id in the Python layer
 
@@ -501,7 +501,7 @@ def create_email_ticket(
             VALUES (%s, %s, 'email', 'Open_Live', %s, %s, %s, %s, %s)
         """, (
             ticket_id, customer_id,
-            category or "ai_handling", priority, team,
+            category or "unclassified", priority, team,
             gmail_thread_id, subject,
         ))
     return ticket_id
@@ -522,7 +522,7 @@ def assign_ai_persona(conversation_id: str, name: str, avatar: str, avatar_url: 
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            UPDATE tickets SET ai_persona = %s::jsonb, category = 'ai_handling'
+            UPDATE tickets SET ai_persona = %s::jsonb, category = 'unclassified'
             WHERE id = %s
         """, (persona, conversation_id))
 
@@ -811,7 +811,7 @@ def get_conversation_with_history(conversation_id: str) -> dict | None:
         "ticket": {
             "id": ticket["id"],
             "status": ticket["status"],
-            "escalation_reason": ticket.get("category") or "ai_handling",
+            "escalation_reason": ticket.get("category") or "unclassified",
             "assigned_agent_id": str(ticket["assigned_to"]) if ticket.get("assigned_to") else None,
         },
         "history": [

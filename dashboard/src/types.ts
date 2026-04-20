@@ -25,7 +25,7 @@ export type TicketCategory =
   | 'password_2fa_reset'
   | 'fraud_security'
   | 'withdrawal_issue'
-  | 'ai_handling';
+  | 'unclassified';
 
 export type InboxView =
   | 'all'
@@ -227,6 +227,33 @@ export interface AnalyticsFilters {
   category?: TicketCategory;
 }
 
+// ── Notifications ─────────────────────────────────────────────────────────────
+
+export type NotificationPriority = 'critical' | 'high' | 'medium' | 'info';
+
+export type NotificationType =
+  | 'sla_breach'
+  | 'sla_warning'
+  | 'assigned'
+  | 'vip_waiting'
+  | 'agent_offline'
+  | 'whisper'
+  | 'escalated'
+  | 'customer_reply';
+
+export interface Notification {
+  id: string;
+  user_id: string;
+  role: string;
+  type: NotificationType | string;
+  priority: NotificationPriority;
+  title: string;
+  body: string;
+  ticket_id?: string | null;
+  read: boolean;
+  created_at: string; // ISO timestamp
+}
+
 // ── WebSocket events ─────────────────────────────────────────────────────────
 
 export type WSEvent =
@@ -240,7 +267,8 @@ export type WSEvent =
   | { type: 'agent_presence';   agentId: string; state: AgentStatus }
   | { type: 'sla:breach';       ticketId: string; priority?: Priority }
   | { type: 'whisper';          ticket_id: string; content: string; supervisor_name: string }
-  | { type: 'supervisor_joined'; ticket_id: string; supervisor_name: string };
+  | { type: 'supervisor_joined'; ticket_id: string; supervisor_name: string }
+  | { type: 'notification:new'; notification: Notification };
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 

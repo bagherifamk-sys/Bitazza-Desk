@@ -170,17 +170,24 @@ def chat(
     # suppress_handoff=True means we're called from inside a workflow node — skip this guard.
     _ACCOUNT_CATEGORIES = {"kyc_verification", "account_restriction", "withdrawal_issue"}
     if category in _ACCOUNT_CATEGORIES and not suppress_handoff:
-        ticket_id = get_ticket_id_by_conversation(conversation_id)
-        if ticket_id:
-            _escalation_status = "Escalated" if platform == "email" else "pending_human"
-            update_ticket_status(ticket_id, _escalation_status)
-        return AgentResponse(
-            text=build_handoff_message(category, language),
-            language=language,
-            escalated=True,
-            escalation_reason="no_active_workflow",
-            ticket_id=ticket_id if ticket_id else None,
-        )
+        # Check if a published workflow exists for this category — if so, let it run instead.
+        try:
+            from workflow_engine.store import get_published_workflows_by_trigger
+            _has_workflow = bool(get_published_workflows_by_trigger("web", category))
+        except Exception:
+            _has_workflow = False
+        if not _has_workflow:
+            ticket_id = get_ticket_id_by_conversation(conversation_id)
+            if ticket_id:
+                _escalation_status = "Escalated" if platform == "email" else "pending_human"
+                update_ticket_status(ticket_id, _escalation_status)
+            return AgentResponse(
+                text=build_handoff_message(category, language),
+                language=language,
+                escalated=True,
+                escalation_reason="no_active_workflow",
+                ticket_id=ticket_id if ticket_id else None,
+            )
 
     # 3a. Mid-conversation category upgrade detection
     # If the user is in "other" but asks about KYC / withdrawals / account restrictions,

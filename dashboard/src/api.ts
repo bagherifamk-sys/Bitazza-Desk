@@ -37,9 +37,9 @@ async function req<T>(path: string, options: RequestInit = {}): Promise<T> {
   console.debug('[api] %s %s → %d', options.method ?? 'GET', url, r.status);
 
   if (r.status === 401) {
-    // Token expired — clear session and reload to login
+    // Token expired — clear session; let React Router handle the redirect
     localStorage.removeItem('auth_user');
-    window.location.href = '/';
+    window.dispatchEvent(new Event('auth:expired'));
     throw new Error('Session expired');
   }
 

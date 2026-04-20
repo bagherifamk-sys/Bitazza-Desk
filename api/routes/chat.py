@@ -5,7 +5,7 @@ from api.middleware.auth import get_user_id
 from api.ws_manager import manager
 from db.conversation_store import (
     init_db, create_conversation, add_message, get_history, get_paginated_history,
-    create_ticket, assign_ai_persona, get_ai_persona, is_human_handling,
+    assign_ai_persona, get_ai_persona, is_human_handling,
     update_ticket_category, count_consecutive_low_confidence,
     get_customer_id_for_user, get_customer_tickets, get_open_ticket_for_customer,
 )
@@ -71,7 +71,7 @@ async def start_conversation(body: StartRequest, user_id: str = Depends(get_user
     cid = create_conversation(user_id=user_id, platform=body.platform, issue_category=body.category)
     agent = pick_agent(body.category)
     assign_ai_persona(cid, agent["name"], agent["avatar"], agent["avatar_url"])
-    tid = create_ticket(cid, "unclassified")
+    tid = cid  # ticket already created by create_conversation; no status change needed
     await manager.broadcast_all({
         "type": "new_ticket",
         "ticket": {

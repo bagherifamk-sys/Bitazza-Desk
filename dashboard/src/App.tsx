@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { PermissionProvider } from './PermissionContext';
-import type { Ticket, InboxView, StatusFilter, AgentStatus, WSEvent, Role } from './types';
+import type { Ticket, InboxView, StatusFilter, AgentStatus, WSEvent, Role, Notification } from './types';
 import { api, createWS } from './api';
+import { NotificationPanel } from './components/NotificationPanel';
+import { ToastContainer } from './components/ToastContainer';
+import type { Toast } from './components/ToastContainer';
 import ConversationList from './components/ConversationList';
 import MessageThread from './components/MessageThread';
 import PropertiesPanel from './components/PropertiesPanel';
@@ -590,9 +593,11 @@ interface TopBarProps {
   activeChats: number;
   onStatusChange: (s: AgentStatus) => void;
   onSearchOpen: () => void;
+  unreadNotifCount: number;
+  onNotificationsOpen: () => void;
 }
 
-function TopBar({ myStatus, activeChats, onStatusChange, onSearchOpen }: TopBarProps) {
+function TopBar({ myStatus, activeChats, onStatusChange, onSearchOpen, unreadNotifCount, onNotificationsOpen }: TopBarProps) {
   const location = useLocation();
   const title = PAGE_TITLES[location.pathname] ?? 'Help Desk';
 
@@ -614,9 +619,17 @@ function TopBar({ myStatus, activeChats, onStatusChange, onSearchOpen }: TopBarP
       </div>
 
       <div className="flex items-center gap-2 shrink-0">
-        <button className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-4 transition-colors relative" title="Notifications">
+        <button
+          onClick={onNotificationsOpen}
+          className="w-8 h-8 flex items-center justify-center rounded-md text-text-muted hover:text-text-primary hover:bg-surface-4 transition-colors relative"
+          title="Notifications"
+        >
           {Icons.bell}
-          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-brand" />
+          {unreadNotifCount > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-brand text-white text-[9px] font-bold leading-none">
+              {unreadNotifCount > 99 ? '99+' : unreadNotifCount}
+            </span>
+          )}
         </button>
         <AgentStateToggle status={myStatus} activeChats={activeChats} onChange={onStatusChange} />
       </div>
@@ -810,6 +823,9 @@ export default function App() {
   const [myStatus, setMyStatus] = useState<AgentStatus>('Available');
   const [activeChats, setActiveChats] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const [wsSocket, setWsSocket] = useState<WebSocket | null>(null);
   const loadTicketsRef = useRef<() => void>(() => {});
@@ -822,6 +838,12 @@ export default function App() {
       if (me) setMyStatus((me.state ?? me.status ?? 'Available') as AgentStatus);
     }).catch(() => {});
   }, []);
+
+  // Load notifications on mount
+  useEffect(() => {
+    if (!user) return;
+    api.getNotifications().then(setNotifications).catch(() => {});
+  }, [user]);
 
   // Apply theme on mount and change
   useEffect(() => { applyTheme(theme); }, [theme]);
@@ -901,6 +923,18 @@ export default function App() {
           ));
           return;
         }
+
+        if (e.type === 'notification:new') {
+          const n = e.notification;
+          setNotifications(prev => [n, ...prev]);
+          if (n.priority === 'critical' || n.priority === 'high') {
+            setToasts(prev => {
+              const next = [{ id: n.id, notification: n }, ...prev];
+              return next.slice(0, 3);
+            });
+          }
+          return;
+        }
       });
       ws.onclose = () => { setWsSocket(null); setTimeout(connect, 3000); };
       wsRef.current = ws;
@@ -962,6 +996,22 @@ export default function App() {
       <div className="flex h-screen bg-surface-0 overflow-hidden">
         {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} onSelectTicket={id => { handleSelectAndNavigate(id); setSearchOpen(false); }} />}
 
+        {notifPanelOpen && (
+          <NotificationPanel
+            notifications={notifications}
+            onClose={() => setNotifPanelOpen(false)}
+            onMarkRead={(id) => setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))}
+            onMarkAllRead={() => setNotifications(prev => prev.map(n => ({ ...n, read: true })))}
+            onOpenTicket={handleSelectAndNavigate}
+          />
+        )}
+
+        <ToastContainer
+          toasts={toasts}
+          onDismiss={(id) => setToasts(prev => prev.filter(t => t.id !== id))}
+          onOpenTicket={handleSelectAndNavigate}
+        />
+
         <Sidebar
           user={user}
           collapsed={collapsed}
@@ -977,6 +1027,8 @@ export default function App() {
             activeChats={activeChats}
             onStatusChange={handleStatusChange}
             onSearchOpen={() => setSearchOpen(true)}
+            unreadNotifCount={notifications.filter(n => !n.read).length}
+            onNotificationsOpen={() => setNotifPanelOpen(p => !p)}
           />
 
           <div className="flex flex-1 overflow-hidden">

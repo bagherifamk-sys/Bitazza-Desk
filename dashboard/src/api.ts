@@ -4,6 +4,7 @@ import type {
   AgentStatus, InboxView, StatusFilter, SupervisorStats, QueueItem, SLARiskTicket,
   ChannelHealth, PendingStale,
   AnalyticsFilters, RelatedTicket, KnowledgeItem, NotificationChannelConfig,
+  Notification,
 } from './types';
 
 // ── Base URL ──────────────────────────────────────────────────────────────────
@@ -291,6 +292,16 @@ export const api = {
   getKnowledgeChunks: (id: number) =>
     req<{ item_id: number; chunks: { index: number; text: string }[] }>(`/api/knowledge/${id}/chunks`),
 
+  // Notifications
+  getNotifications: () =>
+    req<Notification[]>('/api/notifications'),
+
+  markNotificationRead: (id: string) =>
+    req(`/api/notifications/${id}/read`, { method: 'PATCH' }),
+
+  markAllNotificationsRead: () =>
+    req('/api/notifications/read-all/mark', { method: 'PATCH' }),
+
   // FR-09: Core API — live customer profile from Bitazza backend (5s timeout)
   getCoreProfile: async (bitazzaUid: string) => {
     const controller = new AbortController();
@@ -333,7 +344,7 @@ export function createWS(onEvent: (e: unknown) => void): WebSocket {
   const EVENTS = [
     'new_message', 'status_change', 'ticket:updated', 'ticket:assigned',
     'ticket_assigned', 'agent_typing', 'agent_presence', 'sla:breach',
-    'whisper', 'supervisor_joined', 'ticket:resolve_request',
+    'whisper', 'supervisor_joined', 'ticket:resolve_request', 'notification:new',
   ];
 
   EVENTS.forEach(ev => {

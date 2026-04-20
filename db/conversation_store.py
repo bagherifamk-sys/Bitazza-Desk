@@ -239,6 +239,9 @@ _TIER_PRIORITY: dict[str, int] = {
     "regular": 3,
 }
 
+# SLA minutes per priority (must match sla_minutes config in assignment_rules table)
+_SLA_MINUTES: dict[int, int] = {1: 1, 2: 3, 3: 10}
+
 
 def _priority_for_customer(cur, customer_id: str) -> int:
     """Return ticket priority (1/2/3) based on the customer's tier."""
@@ -261,10 +264,11 @@ def create_conversation(user_id: str, platform: str, language: str = "en", issue
         ticket_id = str(uuid.uuid4())
         team = _CATEGORY_TEAM.get(issue_category, "cs")
         priority = _priority_for_customer(cur, customer_id)
+        sla_mins = _SLA_MINUTES.get(priority, 10)
         cur.execute("""
-            INSERT INTO tickets (id, customer_id, channel, status, category, priority, team)
-            VALUES (%s, %s, 'web', 'Open_Live', %s, %s, %s)
-        """, (ticket_id, customer_id, issue_category or 'ai_handling', priority, team))
+            INSERT INTO tickets (id, customer_id, channel, status, category, priority, team, sla_deadline)
+            VALUES (%s, %s, 'web', 'Open_Live', %s, %s, %s, NOW() + %s * INTERVAL '1 minute')
+        """, (ticket_id, customer_id, issue_category or 'ai_handling', priority, team, sla_mins))
 
     return ticket_id  # ticket_id IS the conversation_id in the Python layer
 

@@ -192,6 +192,7 @@ export interface ChannelHealth {
 
 export interface PendingStale {
   id: string;
+  created_at: string | null;
   last_customer_msg_at: string | null;
   customer_name: string | null;
   tier: string | null;
@@ -212,6 +213,7 @@ export interface SLARiskTicket {
   customer_tier?: CustomerTier;
   assigned_agent_name?: string | null;
   seconds_to_breach?: number;
+  created_at?: string;
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────

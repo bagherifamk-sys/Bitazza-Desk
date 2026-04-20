@@ -25,14 +25,23 @@ export function SLATimer({ deadline, className = '', showLabel = false }: SLATim
   const [ms, setMs] = useState(() => msRemaining(deadline));
 
   useEffect(() => {
+    if (!deadline) return;
     const interval = setInterval(() => setMs(msRemaining(deadline)), 1000);
     return () => clearInterval(interval);
   }, [deadline]);
 
-  const breached = ms <= 0;
-  const critical = ms > 0 && ms < 10 * 60 * 1000;    // < 10 min
-  const warning  = ms > 0 && ms < 30 * 60 * 1000;    // < 30 min
+  if (!deadline || isNaN(ms)) {
+    return (
+      <span className={`font-mono font-medium text-xs tabular-nums text-text-muted ${className}`}>
+        {showLabel && <span className="font-sans mr-1">SLA</span>}
+        No SLA
+      </span>
+    );
+  }
 
+  const breached = ms <= 0;
+  const critical = ms > 0 && ms < 10 * 60 * 1000;
+  const warning  = ms > 0 && ms < 30 * 60 * 1000;
   const colorClass = breached ? 'text-brand animate-pulse' : critical ? 'text-brand' : warning ? 'text-accent-amber' : 'text-accent-green';
 
   return (

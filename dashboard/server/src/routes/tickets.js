@@ -61,7 +61,9 @@ async function routeTicket(ticketId, customerId, priority, team = 'default') {
   }
 
   if (assignedTo) {
-    const slaMinutes = priority === 1 ? 10 : priority === 2 ? 15 : 30;
+    const rules = await getAssignmentRules();
+    const slaConfig = typeof rules['sla_minutes'] === 'string' ? JSON.parse(rules['sla_minutes']) : (rules['sla_minutes'] ?? { '1': 1, '2': 3, '3': 10 });
+    const slaMinutes = slaConfig[String(priority)] ?? (priority === 1 ? 1 : priority === 2 ? 3 : 10);
     await pool.query(
       `UPDATE tickets SET assigned_to=$1, status='Open_Live',
          sla_deadline=NOW() + ($2 || ' minutes')::interval, updated_at=NOW()
@@ -557,7 +559,8 @@ router.post('/', async (req, res) => {
     if (vipAutoPriority1 && tier === 'vip') p = 1;
     else if (p === 3 && (tier === 'ea' || tier === 'high_net_worth')) p = 2;
 
-    const slaMinutes = p === 1 ? 10 : p === 2 ? 15 : 30;
+    const slaConfig = typeof rules['sla_minutes'] === 'string' ? JSON.parse(rules['sla_minutes']) : (rules['sla_minutes'] ?? { '1': 1, '2': 3, '3': 10 });
+    const slaMinutes = slaConfig[String(p)] ?? (p === 1 ? 1 : p === 2 ? 3 : 10);
     await pool.query(
       `INSERT INTO tickets (id, customer_id, channel, category, priority, team, sla_deadline)
        VALUES ($1,$2,$3,$4,$5,$6, NOW() + ($7 || ' minutes')::interval)`,

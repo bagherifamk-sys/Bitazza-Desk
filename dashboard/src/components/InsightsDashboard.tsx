@@ -406,7 +406,7 @@ function BotPerformanceTab({ data }: { data: InsightsData }) {
         <div className="bg-surface-2 ring-1 ring-surface-5 rounded-xl p-5">
           <p className="text-xs text-text-muted mb-1">Bot Tickets</p>
           <p className="text-2xl font-bold text-text-primary">{bot.bot_total ?? 0}</p>
-          <p className="text-xs text-text-muted mt-1">Web channel (bot-handled)</p>
+          <p className="text-xs text-text-muted mt-1">Unclassified or bot-handled</p>
         </div>
         <div className="bg-surface-2 ring-1 ring-surface-5 rounded-xl p-5">
           <p className="text-xs text-text-muted mb-1">Human Tickets</p>

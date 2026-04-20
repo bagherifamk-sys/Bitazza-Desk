@@ -422,6 +422,9 @@ CREATE TABLE IF NOT EXISTS notification_channel_configs (
   updated_by  UUID REFERENCES users(id) ON DELETE SET NULL,
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Migration 009: rename category value 'ai_handling' → 'unclassified'
+UPDATE tickets SET category = 'unclassified' WHERE category = 'ai_handling';
 `;
 
 (async () => {
